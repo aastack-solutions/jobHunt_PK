@@ -1,0 +1,174 @@
+// JobHunt PK — Prisma schema
+// 7 active tables: User, Resume, Job, JobMatch, Application, Interview, SchedulerLog.
+// FlaggedJob (the 8th table) is reserved for a future week — do NOT add it here.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7: the connection URL lives in prisma.config.ts (for Migrate) and the
+// PrismaClient is constructed with a driver adapter (see src/db.js). The schema
+// datasource block declares only the provider now.
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                 String   @id @default(cuid())
+  email              String   @unique
+  passwordHash       String
+  fullName           String
+  timezone           String   @default("Asia/Karachi")
+
+  // Salary expectations — raw value + currency, USD computed at match time.
+  salaryMin          Int?
+  salaryMax          Int?
+  salaryCurrency     String   @default("USD") // "PKR" | "USD" — never omit
+
+  // Job preferences.
+  wantsRemote        Boolean  @default(true)
+  wantsOnsiteKarachi Boolean  @default(false)
+
+  // Home location — geocoded once when homeArea is saved.
+  homeArea           String?
+  homeLat            Float?
+  homeLng            Float?
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  resumes      Resume[]
+  jobMatches   JobMatch[]
+  applications Application[]
+  interviews   Interview[]
+}
+
+model Resume {
+  id              String   @id @default(cuid())
+  userId          String
+  fileName        String
+  fileKey         String   // R2 object key
+  skills          String[] @default([])
+  experienceYears Int      @default(0)
+  seniorityLevel  String   @default("junior")
+  isImageBased    Boolean  @default(false)
+  parseWarning    String?
+  isActive        Boolean  @default(true)
+  uploadedAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isActive])
+}
+
+model Job {
+  id             String   @id @default(cuid())
+  externalId     String?  // id from source platform, for dedupe
+  platform       String   // remotive | rozee | arbeitnow | mustakbil | himalayas ...
+  title          String
+  company        String
+  description    String?
+
+  locationType   String   // "Remote" | "Onsite" | "Hybrid" — location eligibility
+  employmentType String?  // "full-time" | "contract" | "part-time" — employment terms
+  city           String?  // normalized lowercase — "karachi" or null for Remote
+  rawLocation    String?  // original string from source for debugging
+
+  salaryMin      Int?     // raw value in original currency
+  salaryMax      Int?     // raw value in original currency
+  salaryCurrency String   @default("USD") // "PKR" | "USD"
+
+  skills         String[] @default([])
+  applyUrl       String
+
+  isActive       Boolean  @default(true)
+  fetchedAt      DateTime @default(now())
+  postedAt       DateTime?
+  expiresAt      DateTime // set in normalizeJob(), never null, no @default needed
+
+  jobMatches   JobMatch[]
+  applications Application[]
+
+  @@index([isActive, locationType])
+  @@index([isActive, expiresAt])
+  @@index([isActive, fetchedAt])
+  @@index([platform, externalId])
+}
+
+model JobMatch {
+  id              String   @id @default(cuid())
+  userId          String
+  jobId           String
+  matchScore      Int
+  locationType    String   // denormalized from Job — never join to get this
+  matchedSkills   String[] @default([])
+  skillScore      Int?
+  experienceScore Int?
+  salaryScore     Int?
+  distanceKm      Float?
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job  Job  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, jobId])
+  @@index([userId, matchScore])
+  @@index([userId, locationType])
+  @@index([jobId])
+}
+
+model Application {
+  id           String   @id @default(cuid())
+  userId       String
+  jobId        String?
+  jobTitle     String
+  company      String
+  locationType String   // denormalized from Job — never join to get this
+  status       String   @default("applied")
+  notes        String?
+  appliedAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job  Job? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([userId, appliedAt])
+  @@index([userId, locationType])
+  @@index([jobId])
+}
+
+model Interview {
+  id            String   @id @default(cuid())
+  userId        String
+  applicationId String?
+  jobTitle      String
+  company       String
+  interviewType String   // "video" | "onsite" | "phone"
+  scheduledAt   DateTime
+  meetingLink   String?
+  officeAddress String?  // for onsite map link in reminder email
+  outcome       String?
+  notes         String?
+  reminderSent  Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, scheduledAt])
+  @@index([reminderSent, scheduledAt])
+  @@index([userId])
+}
+
+model SchedulerLog {
+  id              String   @id @default(cuid())
+  jobName         String
+  status          String   // "completed" | "failed"
+  jobCount        Int?
+  sourceBreakdown Json?    // { remotive: 120, rozee: 0, mustakbil: 45 }
+  error           String?
+  ranAt           DateTime @default(now())
+
+  @@index([jobName, ranAt])
+}

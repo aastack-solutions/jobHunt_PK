@@ -4,6 +4,7 @@
 const prisma = require('../src/db');
 const logger = require('../src/logger');
 const { fetchAllJobs } = require('../src/services/jobFetcher');
+const { matchNewJobs } = require('../src/services/matchingEngine');
 
 async function runDailyJobFetch() {
   const started = Date.now();
@@ -24,6 +25,9 @@ async function runDailyJobFetch() {
     // DO NOTHING, covering both unique constraints (platform+externalId, contentHash).
     const { count } = await prisma.job.createMany({ data: deduped, skipDuplicates: true });
 
+    // Score the newly inserted jobs for every user (delta match).
+    const matched = await matchNewJobs();
+
     await prisma.schedulerLog.create({
       data: {
         jobName: 'daily-job-fetch',
@@ -34,9 +38,15 @@ async function runDailyJobFetch() {
     });
 
     logger.info(
-      `daily-job-fetch: inserted ${count} new / ${deduped.length} unique / ${jobs.length} fetched in ${Date.now() - started}ms`
+      `daily-job-fetch: inserted ${count} new / ${deduped.length} unique / ${jobs.length} fetched, ${matched.created} matches in ${Date.now() - started}ms`
     );
-    return { inserted: count, unique: deduped.length, fetched: jobs.length, sourceBreakdown };
+    return {
+      inserted: count,
+      unique: deduped.length,
+      fetched: jobs.length,
+      sourceBreakdown,
+      matches: matched.created,
+    };
   } catch (err) {
     logger.error(`daily-job-fetch failed: ${err.message}`);
     await prisma.schedulerLog

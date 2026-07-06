@@ -158,6 +158,19 @@ Invoke-RestMethod http://localhost:5000/api/internal/trigger-fetch -Method Post 
 - **Exchange rate:** 04:45 UTC job PKR/USD rate Redis mein cache karta hai (salary ko USD mein normalize karne ke liye). Manually populate: backend log dekho ya scheduler chalne do.
 - **Match scores dekhne ke liye:** user ke paas resume skills honi chahiyein (Settings/Resume se), warna skillScore 0 rahega.
 
+## 7d. Applications + AI (Week 5)
+
+- **Applications:** `/api/applications` — apply (jobId se), 8-stage status, notes, `/export` CSV. Frontend Applications page live.
+- **AI (Groq):** cover letter / job summary / interview prep — BullMQ `ai-tasks` queue se (rate-limited 1 req/3s). Route sirf enqueue karta hai; worker Groq call karta hai. Frontend 2s pe poll karta hai (2 min timeout).
+- **AI activate karne ke liye valid key chahiye:** provided `GROQ_API_KEY` ka org restricted hai. https://console.groq.com se free key le kar `.env` mein replace karein.
+
+### ⚠️ Provided credentials jo kaam nahi karte (fresh chahiyein)
+| Service | Masla | Fix |
+|---------|-------|-----|
+| Cloudflare R2 | AccessDenied (resume file store) | Valid R2 keys — warna upload gracefully skip |
+| Adzuna | keys khaali (Karachi jobs) | Free key https://developer.adzuna.com |
+| Groq | org restricted (AI) | Free key https://console.groq.com |
+
 ---
 
 ## 8. Custom Agent Commands (`/` commands)

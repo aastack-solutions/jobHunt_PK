@@ -10,6 +10,7 @@ const schedulerQueue = require('../queues/schedulerQueue');
 const { bullConnection } = require('../queues/bullConnection');
 const { runDailyJobFetch } = require('../../jobs/dailyJobFetch');
 const { runExchangeRateFetch } = require('../../jobs/exchangeRateFetch');
+const { runInterviewReminders } = require('../../jobs/interviewReminders');
 
 // Register repeatable jobs. Never purge existing ones — BullMQ dedupes by jobId,
 // so re-adding on every boot is safe and avoids missed runs near a scheduled time.
@@ -31,6 +32,12 @@ async function registerRepeatableJobs() {
     {},
     { repeat: { pattern: '0 5 * * *', tz: 'UTC' }, jobId: 'daily-job-fetch' }
   );
+  // Interview reminders at 08:00 UTC (emails anyone with an interview <24h away).
+  await schedulerQueue.add(
+    'interview-reminders',
+    {},
+    { repeat: { pattern: '0 8 * * *', tz: 'UTC' }, jobId: 'interview-reminders' }
+  );
 }
 
 function createSchedulerWorker() {
@@ -42,6 +49,8 @@ function createSchedulerWorker() {
           return runExchangeRateFetch();
         case 'daily-job-fetch':
           return runDailyJobFetch();
+        case 'interview-reminders':
+          return runInterviewReminders();
         default:
           logger.warn(`scheduler: unknown job "${job.name}"`);
           return null;
@@ -54,7 +63,7 @@ function createSchedulerWorker() {
   worker.on('failed', (job, err) => logger.error(`scheduler: ${job?.name} failed — ${err?.message}`));
 
   registerRepeatableJobs().catch((err) => logger.error(`scheduler register: ${err.message}`));
-  logger.info('Scheduler worker started (exchange-rate @ 04:45, daily-job-fetch @ 05:00 UTC).');
+  logger.info('Scheduler worker started (exchange-rate 04:45, daily-fetch 05:00, interview-reminders 08:00 UTC).');
   return worker;
 }
 

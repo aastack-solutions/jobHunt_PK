@@ -148,7 +148,15 @@ Invoke-RestMethod http://localhost:5000/api/internal/trigger-fetch -Method Post 
 - **Sources (live):** Remotive, Arbeitnow, Himalayas (free JSON APIs, no key).
 - **Karachi sources:** scaffold ready par **disabled** — kisi source ke ToS/robots verify hone tak `jobFetcher.js` ke `KARACHI_SOURCES` mein `enabled:false`. Spec ke mutabiq restrict karne wale sources skip karne hain.
 - **Dedup:** DB constraints se — `platform+externalId` aur `contentHash`. Dobara fetch pe duplicate skip (`inserted:0`).
-- **Browse:** `GET /api/jobs` sirf woh jobs deta hai jinke liye user eligible hai (Remote → wantsRemote; Onsite/Hybrid → wantsOnsiteKarachi + city=karachi). `matchScore` Week 4 mein aayega.
+- **Browse:** `GET /api/jobs` user ke JobMatch rows se scored jobs deta hai (score se sorted; `minScore`, `sort`, `locationType`, `platform`, `q` filters).
+
+## 7c. Matching Engine (Week 4)
+
+- Har daily fetch ke baad naye jobs har user ke liye score hote hain (delta match).
+- **Score = Skill×0.55 + Experience×0.30 + Salary×0.15** (values `backend/CLAUDE.md` mein).
+- User ki **preferences ya resume skills** badalne pe woh user turant re-match hota hai (`/api/jobs` foran update).
+- **Exchange rate:** 04:45 UTC job PKR/USD rate Redis mein cache karta hai (salary ko USD mein normalize karne ke liye). Manually populate: backend log dekho ya scheduler chalne do.
+- **Match scores dekhne ke liye:** user ke paas resume skills honi chahiyein (Settings/Resume se), warna skillScore 0 rahega.
 
 ---
 

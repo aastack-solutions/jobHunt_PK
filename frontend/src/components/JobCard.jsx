@@ -6,7 +6,9 @@ import LocationTypePill from './LocationTypePill';
 import { formatSalary } from '../lib/format';
 
 export default function JobCard({ job, onApply, onViewDetails }) {
-  const skills = job.matchedSkills || [];
+  // matchedSkills come from the matching engine (Week 4); until then show the
+  // job's own parsed skills.
+  const skills = job.matchedSkills?.length ? job.matchedSkills : job.skills || [];
   const visible = skills.slice(0, 4);
   const overflow = skills.length - visible.length;
 

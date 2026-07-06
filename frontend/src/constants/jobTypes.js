@@ -8,4 +8,5 @@ export const MATCH_LABELS = {
   LOW: { label: 'Low', min: 0 },
 };
 
-export const PLATFORMS = ['remotive', 'rozee', 'arbeitnow', 'mustakbil', 'himalayas'];
+// Live sources. adzuna = Karachi onsite pool (activates when ADZUNA keys are set).
+export const PLATFORMS = ['remotive', 'arbeitnow', 'himalayas', 'adzuna'];

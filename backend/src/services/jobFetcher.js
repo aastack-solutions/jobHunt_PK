@@ -37,14 +37,17 @@ function contentHash(company, title, description) {
 
 // Cross-cutting finalize: classify location, normalize city, fingerprint, expiry.
 // Returns null when a required field (title/company/applyUrl) is missing.
-function normalizeJob(m, platform) {
+function normalizeJob(m, platform, locationHint = null) {
   const title = (m.title || '').trim();
   const company = (m.company || '').trim();
   const applyUrl = (m.applyUrl || '').trim();
   if (!title || !company || !applyUrl) return null;
 
   const description = stripHtml(m.description);
-  const locationType = classifyLocationType(title, description, platform);
+  let locationType = classifyLocationType(title, description, platform);
+  // A Karachi-scoped source (e.g. Adzuna where=Karachi) with no remote signal is
+  // an onsite role — override the classifier's default Remote.
+  if (locationHint === 'karachi' && locationType === 'Remote') locationType = 'Onsite';
   // City only matters for Onsite/Hybrid; Remote jobs carry no city.
   const city = locationType === 'Remote' ? null : normalizeCity(m.rawLocation);
 
@@ -135,7 +138,43 @@ async function fetchHimalayas() {
   } catch (err) { logger.error(`himalayas: ${err.message}`); return []; }
 }
 
-// ---------------- Karachi onsite/hybrid sources ----------------
+// Adzuna Pakistan API — official free-tier source for Karachi onsite/hybrid roles.
+// Structured JSON, no scraping. Inactive until ADZUNA_APP_ID/KEY are set (free
+// signup at https://developer.adzuna.com). where=Karachi scopes results to the city.
+async function fetchAdzunaKarachi() {
+  const appId = process.env.ADZUNA_APP_ID;
+  const appKey = process.env.ADZUNA_APP_KEY;
+  if (!appId || !appKey) {
+    logger.warn('adzuna: ADZUNA_APP_ID/KEY not set — Karachi source inactive');
+    return [];
+  }
+  try {
+    const url =
+      `https://api.adzuna.com/v1/api/jobs/pk/search/1?app_id=${encodeURIComponent(appId)}` +
+      `&app_key=${encodeURIComponent(appKey)}&results_per_page=50&where=Karachi&content-type=application/json`;
+    const { data } = await axios.get(url, { timeout: REQUEST_TIMEOUT });
+    const results = data?.results || [];
+    if (!results.length) { logger.warn('adzuna: 0 jobs'); return []; }
+    return results
+      .map((j) => normalizeJob({
+        externalId: j.id,
+        title: j.title,
+        company: j.company?.display_name,
+        description: j.description,
+        rawLocation: j.location?.display_name,
+        employmentType: j.contract_time || j.contract_type || null,
+        salaryMin: Number.isFinite(j.salary_min) ? Math.round(j.salary_min) : null,
+        salaryMax: Number.isFinite(j.salary_max) ? Math.round(j.salary_max) : null,
+        salaryCurrency: 'PKR', // Adzuna PK quotes local currency
+        skills: j.category?.label ? [j.category.label] : [],
+        applyUrl: j.redirect_url,
+        postedAt: j.created,
+      }, 'adzuna', 'karachi'))
+      .filter(Boolean);
+  } catch (err) { logger.error(`adzuna: ${err.message}`); return []; }
+}
+
+// ---------------- Karachi scraper sources (disabled) ----------------
 //
 // Pakistan job boards (Rozee, Mustakbil, JobLo) have no stable free API. Per spec:
 // check each source's ToS + robots.txt, prefer an official feed over scraping,
@@ -171,12 +210,14 @@ async function fetchKarachiSources() {
 // ---------------- Orchestrator ----------------
 
 async function fetchAllJobs() {
-  const remoteFetchers = [fetchRemotive, fetchArbeitnow, fetchHimalayas];
-  const settled = await Promise.allSettled(remoteFetchers.map((fn) => fn()));
-  const remote = settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+  // API-backed sources run in parallel (remote boards + Adzuna Karachi).
+  const apiFetchers = [fetchRemotive, fetchArbeitnow, fetchHimalayas, fetchAdzunaKarachi];
+  const settled = await Promise.allSettled(apiFetchers.map((fn) => fn()));
+  const fromApis = settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
 
-  const karachi = await fetchKarachiSources();
-  const jobs = [...remote, ...karachi];
+  // Scraper sources (currently none enabled) run sequentially with a polite delay.
+  const fromScrapers = await fetchKarachiSources();
+  const jobs = [...fromApis, ...fromScrapers];
 
   const sourceBreakdown = {};
   for (const j of jobs) sourceBreakdown[j.platform] = (sourceBreakdown[j.platform] || 0) + 1;

@@ -127,7 +127,9 @@ const port = parseInt(process.env.PORT || '5000', 10);
 const server = app.listen(port, () => {
   logger.info(`Backend listening on port ${port}`);
   const { createSchedulerWorker } = require('./workers/schedulerWorker');
+  const { createAIWorker } = require('./workers/aiWorker');
   createSchedulerWorker();
+  createAIWorker();
 });
 
 module.exports = { app, server };

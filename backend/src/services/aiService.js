@@ -3,7 +3,9 @@
 // Model + token/temperature limits are pinned by backend/CLAUDE.md.
 const Groq = require('groq-sdk');
 
-const MODEL = 'llama3-8b-8192';
+// Note: CLAUDE.md pins llama3-8b-8192, but Groq decommissioned it. Its direct
+// free successor is llama-3.1-8b-instant (fast, 8B) — update CLAUDE.md to match.
+const MODEL = 'llama-3.1-8b-instant';
 const TIMEOUT_MS = 30000;
 
 let client;

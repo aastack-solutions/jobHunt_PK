@@ -164,12 +164,19 @@ Invoke-RestMethod http://localhost:5000/api/internal/trigger-fetch -Method Post 
 - **AI (Groq):** cover letter / job summary / interview prep — BullMQ `ai-tasks` queue se (rate-limited 1 req/3s). Route sirf enqueue karta hai; worker Groq call karta hai. Frontend 2s pe poll karta hai (2 min timeout).
 - **AI activate karne ke liye valid key chahiye:** provided `GROQ_API_KEY` ka org restricted hai. https://console.groq.com se free key le kar `.env` mein replace karein.
 
-### ⚠️ Provided credentials jo kaam nahi karte (fresh chahiyein)
-| Service | Masla | Fix |
-|---------|-------|-----|
-| Cloudflare R2 | AccessDenied (resume file store) | Valid R2 keys — warna upload gracefully skip |
-| Adzuna | keys khaali (Karachi jobs) | Free key https://developer.adzuna.com |
-| Groq | org restricted (AI) | Free key https://console.groq.com |
+## 7e. Interviews + Email (Week 7)
+
+- **Interviews:** `/api/interviews` — schedule (video/onsite/phone), outcome, notes; reschedule reminderSent reset karta hai. Frontend Interviews page live.
+- **Reminders:** `interview-reminders` job (08:00 UTC) 24h ke andar wale interviews ko email karta hai. Onsite interviews mein Google Maps link (escaped).
+- **Brevo email KAAM karta hai** ✅ (test mein 1/1 email sent) — yeh provided credentials mein se zinda hai.
+
+### Provided credentials ka status
+| Service | Status | Fix |
+|---------|--------|-----|
+| Brevo (email) | ✅ Kaam karta hai | — |
+| Cloudflare R2 | ❌ AccessDenied (resume store) | Valid R2 keys — warna upload gracefully skip |
+| Adzuna | ❌ keys khaali (Karachi jobs) | Free key https://developer.adzuna.com |
+| Groq | ❌ org restricted (AI) | Free key https://console.groq.com |
 
 ---
 

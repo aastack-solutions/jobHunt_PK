@@ -44,9 +44,19 @@ function normalizeJob(m, platform, locationHint = null) {
   if (!title || !company || !applyUrl) return null;
 
   const description = stripHtml(m.description);
+
+  // remote-strict: general boards (Adzuna/Jooble) also return onsite jobs — keep
+  // only ones with an explicit remote/hybrid signal so they don't fall through to
+  // the classifier's default 'Remote' and pollute the remote pool.
+  if (
+    locationHint === 'remote-strict' &&
+    !/\b(remote|wfh|work from home|work remotely|distributed|hybrid)\b/i.test(`${title} ${description}`)
+  ) {
+    return null;
+  }
+
   let locationType = classifyLocationType(title, description, platform);
-  // A Karachi-scoped source (e.g. Adzuna where=Karachi) with no remote signal is
-  // an onsite role — override the classifier's default Remote.
+  // A Karachi-scoped source with no remote signal is an onsite role.
   if (locationHint === 'karachi' && locationType === 'Remote') locationType = 'Onsite';
   // City only matters for Onsite/Hybrid; Remote jobs carry no city.
   const city = locationType === 'Remote' ? null : normalizeCity(m.rawLocation);
@@ -138,40 +148,67 @@ async function fetchHimalayas() {
   } catch (err) { logger.error(`himalayas: ${err.message}`); return []; }
 }
 
-// Adzuna Pakistan API — official free-tier source for Karachi onsite/hybrid roles.
-// Structured JSON, no scraping. Inactive until ADZUNA_APP_ID/KEY are set (free
-// signup at https://developer.adzuna.com). where=Karachi scopes results to the city.
-async function fetchAdzunaKarachi() {
+// Adzuna — general job board (no Pakistan coverage). Used as an extra REMOTE
+// source: query supported countries with what=remote, then remote-strict keeps
+// only genuinely remote roles. Inactive until ADZUNA_APP_ID/KEY are set.
+async function fetchAdzunaRemote() {
   const appId = process.env.ADZUNA_APP_ID;
   const appKey = process.env.ADZUNA_APP_KEY;
-  if (!appId || !appKey) {
-    logger.warn('adzuna: ADZUNA_APP_ID/KEY not set — Karachi source inactive');
-    return [];
+  if (!appId || !appKey) { logger.warn('adzuna: keys not set — skipped'); return []; }
+  const countries = ['gb', 'us'];
+  const out = [];
+  for (const cc of countries) {
+    try {
+      const url =
+        `https://api.adzuna.com/v1/api/jobs/${cc}/search/1?app_id=${encodeURIComponent(appId)}` +
+        `&app_key=${encodeURIComponent(appKey)}&results_per_page=50&what=remote&content-type=application/json`;
+      const { data } = await axios.get(url, { timeout: REQUEST_TIMEOUT });
+      const results = data?.results || [];
+      // Salary omitted on purpose: gb/us quote GBP/USD and we only normalize
+      // PKR<->USD, so leaving it null yields the neutral salary sub-score.
+      out.push(...results
+        .map((j) => normalizeJob({
+          externalId: j.id,
+          title: j.title,
+          company: j.company?.display_name,
+          description: j.description,
+          rawLocation: j.location?.display_name,
+          employmentType: j.contract_time || j.contract_type || null,
+          skills: j.category?.label ? [j.category.label] : [],
+          applyUrl: j.redirect_url,
+          postedAt: j.created,
+        }, 'adzuna', 'remote-strict'))
+        .filter(Boolean));
+    } catch (err) { logger.error(`adzuna ${cc}: ${err.message}`); }
   }
+  return out;
+}
+
+// Jooble — global aggregator (no Pakistan data). Used as an extra REMOTE source:
+// search "remote", then remote-strict drops the onsite results it also returns.
+async function fetchJoobleRemote() {
+  const key = process.env.JOOBLE_API_KEY;
+  if (!key) { logger.warn('jooble: key not set — skipped'); return []; }
   try {
-    const url =
-      `https://api.adzuna.com/v1/api/jobs/pk/search/1?app_id=${encodeURIComponent(appId)}` +
-      `&app_key=${encodeURIComponent(appKey)}&results_per_page=50&where=Karachi&content-type=application/json`;
-    const { data } = await axios.get(url, { timeout: REQUEST_TIMEOUT });
-    const results = data?.results || [];
-    if (!results.length) { logger.warn('adzuna: 0 jobs'); return []; }
-    return results
+    const { data } = await axios.post(
+      `https://jooble.org/api/${key}`,
+      { keywords: 'remote developer', page: '1' },
+      { timeout: REQUEST_TIMEOUT, headers: { 'Content-Type': 'application/json' } }
+    );
+    const jobs = data?.jobs || [];
+    return jobs
       .map((j) => normalizeJob({
         externalId: j.id,
         title: j.title,
-        company: j.company?.display_name,
-        description: j.description,
-        rawLocation: j.location?.display_name,
-        employmentType: j.contract_time || j.contract_type || null,
-        salaryMin: Number.isFinite(j.salary_min) ? Math.round(j.salary_min) : null,
-        salaryMax: Number.isFinite(j.salary_max) ? Math.round(j.salary_max) : null,
-        salaryCurrency: 'PKR', // Adzuna PK quotes local currency
-        skills: j.category?.label ? [j.category.label] : [],
-        applyUrl: j.redirect_url,
-        postedAt: j.created,
-      }, 'adzuna', 'karachi'))
+        company: j.company,
+        description: j.snippet,
+        rawLocation: j.location,
+        employmentType: j.type,
+        applyUrl: j.link,
+        postedAt: j.updated,
+      }, 'jooble', 'remote-strict'))
       .filter(Boolean);
-  } catch (err) { logger.error(`adzuna: ${err.message}`); return []; }
+  } catch (err) { logger.error(`jooble: ${err.message}`); return []; }
 }
 
 // ---------------- Karachi scraper sources (disabled) ----------------
@@ -210,8 +247,8 @@ async function fetchKarachiSources() {
 // ---------------- Orchestrator ----------------
 
 async function fetchAllJobs() {
-  // API-backed sources run in parallel (remote boards + Adzuna Karachi).
-  const apiFetchers = [fetchRemotive, fetchArbeitnow, fetchHimalayas, fetchAdzunaKarachi];
+  // API-backed remote sources run in parallel.
+  const apiFetchers = [fetchRemotive, fetchArbeitnow, fetchHimalayas, fetchAdzunaRemote, fetchJoobleRemote];
   const settled = await Promise.allSettled(apiFetchers.map((fn) => fn()));
   const fromApis = settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
 

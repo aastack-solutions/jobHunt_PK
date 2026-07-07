@@ -211,18 +211,65 @@ async function fetchJoobleRemote() {
   } catch (err) { logger.error(`jooble: ${err.message}`); return []; }
 }
 
-// ---------------- Karachi scraper sources (disabled) ----------------
+// ---------------- Karachi onsite source ----------------
 //
-// Pakistan job boards (Rozee, Mustakbil, JobLo) have no stable free API. Per spec:
-// check each source's ToS + robots.txt, prefer an official feed over scraping,
-// keep request rates low (LOCAL_FETCH_DELAY_MS), and SKIP any source whose terms
-// restrict automated access. Until a source is verified, it stays `enabled: false`
-// and contributes nothing — the sequential+delay plumbing is ready for when one is
-// cleared: add its listUrl + a parse(cheerio$) that returns raw jobs.
-const KARACHI_SOURCES = [
-  // Example shape (disabled — enable only after ToS/robots verified):
-  // { platform: 'mustakbil', enabled: false, listUrl: 'https://...', parse: ($) => [...] },
-];
+// Mustakbil's Karachi listing is server-rendered (job cards are in the initial
+// HTML, no JS needed) and its robots.txt allows generic clients on job pages, so
+// a single polite request per fetch is within bounds. We use a descriptive UA and
+// only hit the listing page (not 60 detail pages). Rozee is intentionally NOT
+// scraped: it returns 403 to bots (active anti-bot), and the spec says skip such
+// sources rather than work around them.
+const MUSTAKBIL_URL = 'https://www.mustakbil.com/jobs/pakistan/karachi';
+const SCRAPER_UA = 'Mozilla/5.0 (compatible; JobHuntPK/1.0; +https://github.com/aastack-solutions/jobHunt_PK)';
+
+async function fetchMustakbilKarachi() {
+  try {
+    const { data: html } = await axios.get(MUSTAKBIL_URL, {
+      timeout: REQUEST_TIMEOUT,
+      headers: { 'User-Agent': SCRAPER_UA },
+    });
+    const $ = cheerio.load(html);
+    const out = [];
+    const seen = new Set();
+    $('a[href*="/jobs/job/"]').each((_, el) => {
+      const href = $(el).attr('href');
+      const title = $(el).text().replace(/\s+/g, ' ').trim();
+      if (!href || !title || title.length < 3 || seen.has(href)) return;
+      seen.add(href);
+      const idMatch = href.match(/\/jobs\/job\/(\d+)/);
+      // Card text renders as "TITLE business COMPANY place LOCATION" (icon ligatures).
+      const card = $(el).closest('div,li,article').text().replace(/\s+/g, ' ').trim();
+      // Strip the title prefix first, then split on the lowercase Material-icon
+      // ligatures "business"/"place" (case-sensitive so a title like "Business
+      // Development…" doesn't match the company marker).
+      const rest = card.startsWith(title) ? card.slice(title.length) : card;
+      const m = rest.match(/business(.+?)place(.+)/);
+      const company = (m && m[1].trim()) || 'Unknown';
+      const rawLocation = (m && m[2].trim()) || 'Karachi, Pakistan';
+      const job = normalizeJob(
+        {
+          externalId: idMatch ? idMatch[1] : null,
+          title,
+          company,
+          description: '',
+          rawLocation,
+          applyUrl: `https://www.mustakbil.com${href}`,
+        },
+        'mustakbil',
+        'karachi'
+      );
+      if (job) out.push(job);
+    });
+    if (!out.length) logger.warn('mustakbil: 0 jobs (page structure may have changed)');
+    return out;
+  } catch (err) {
+    logger.error(`mustakbil: ${err.message}`);
+    return [];
+  }
+}
+
+// Additional scraper sources can be added here (sequential, polite, ToS-checked).
+const KARACHI_SOURCES = [];
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -252,9 +299,10 @@ async function fetchAllJobs() {
   const settled = await Promise.allSettled(apiFetchers.map((fn) => fn()));
   const fromApis = settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
 
-  // Scraper sources (currently none enabled) run sequentially with a polite delay.
+  // Karachi onsite scraper(s) run sequentially with a polite delay.
+  const mustakbil = await fetchMustakbilKarachi();
   const fromScrapers = await fetchKarachiSources();
-  const jobs = [...fromApis, ...fromScrapers];
+  const jobs = [...fromApis, ...mustakbil, ...fromScrapers];
 
   const sourceBreakdown = {};
   for (const j of jobs) sourceBreakdown[j.platform] = (sourceBreakdown[j.platform] || 0) + 1;

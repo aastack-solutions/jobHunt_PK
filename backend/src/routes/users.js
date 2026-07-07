@@ -3,8 +3,12 @@ const express = require('express');
 const { z } = require('zod');
 const prisma = require('../db');
 const requireAuth = require('../middleware/requireAuth');
+const { rematchUser } = require('../services/matchingEngine');
 
 const router = express.Router();
+
+// Preference fields that change eligibility/scoring and thus require a re-match.
+const MATCH_AFFECTING = ['wantsRemote', 'wantsOnsiteKarachi', 'salaryMin', 'salaryMax', 'salaryCurrency'];
 
 // All fields optional — this is a partial update (PATCH).
 const preferencesSchema = z
@@ -31,12 +35,17 @@ router.patch('/me/preferences', requireAuth, async (req, res) => {
     return res.status(400).json({ error: result.error.issues[0].message });
   }
 
-  // Note: homeArea geocoding (homeLat/homeLng) and delta re-matching are
-  // wired up in a later week; this week we persist the raw preferences.
   const updated = await prisma.user.update({
     where: { id: req.session.userId },
     data: result.data,
   });
+
+  // Re-match immediately when a preference that affects eligibility or scoring
+  // changed, so the Jobs list reflects the toggle right away.
+  // (homeArea geocoding for distance sort arrives in a later week.)
+  if (MATCH_AFFECTING.some((k) => k in result.data)) {
+    await rematchUser(updated.id);
+  }
 
   return res.json(publicUser(updated));
 });

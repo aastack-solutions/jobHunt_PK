@@ -20,6 +20,7 @@ const jobsRoute = require('./routes/jobs');
 const applicationsRoute = require('./routes/applications');
 const interviewsRoute = require('./routes/interviews');
 const aiRoute = require('./routes/ai');
+const dashboardRoute = require('./routes/dashboard');
 const internalRoute = require('./routes/internal');
 
 // ---- Startup env validation: fail loudly on missing core vars ----
@@ -98,6 +99,7 @@ app.use('/api/jobs', jobsRoute);
 app.use('/api/applications', applicationsRoute);
 app.use('/api/interviews', interviewsRoute);
 app.use('/api/ai', aiRoute);
+app.use('/api/dashboard', dashboardRoute);
 app.use('/api/internal', internalRoute);
 
 // ---- SPA fallback — Express 5 requires a NAMED wildcard ----
@@ -127,7 +129,9 @@ const port = parseInt(process.env.PORT || '5000', 10);
 const server = app.listen(port, () => {
   logger.info(`Backend listening on port ${port}`);
   const { createSchedulerWorker } = require('./workers/schedulerWorker');
+  const { createAIWorker } = require('./workers/aiWorker');
   createSchedulerWorker();
+  createAIWorker();
 });
 
 module.exports = { app, server };

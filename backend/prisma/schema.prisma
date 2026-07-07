@@ -65,6 +65,7 @@ model Resume {
 model Job {
   id             String   @id @default(cuid())
   externalId     String?  // id from source platform, for dedupe
+  contentHash    String?  // sha1(company|title|desc[:200]) — content fingerprint for dedupe
   platform       String   // remotive | rozee | arbeitnow | mustakbil | himalayas ...
   title          String
   company        String
@@ -90,10 +91,13 @@ model Job {
   jobMatches   JobMatch[]
   applications Application[]
 
+  // Dedupe enforced as DB constraints (spec §Job Fetching): exact source match
+  // and content fingerprint. createMany({ skipDuplicates }) relies on these.
+  @@unique([platform, externalId])
+  @@unique([contentHash])
   @@index([isActive, locationType])
   @@index([isActive, expiresAt])
   @@index([isActive, fetchedAt])
-  @@index([platform, externalId])
 }
 
 model JobMatch {

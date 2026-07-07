@@ -7,6 +7,7 @@ const prisma = require('../db');
 const logger = require('../logger');
 const requireAuth = require('../middleware/requireAuth');
 const storage = require('../services/storageService');
+const { rematchUser } = require('../services/matchingEngine');
 
 const router = express.Router();
 
@@ -79,7 +80,15 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
   let fileKey;
   let storageWarning = null;
   if (storage.isConfigured()) {
-    fileKey = await storage.uploadBuffer(storage.buildResumeKey(userId, ext), buffer, mimetype);
+    try {
+      fileKey = await storage.uploadBuffer(storage.buildResumeKey(userId, ext), buffer, mimetype);
+    } catch (err) {
+      // R2 misconfigured / access denied — don't fail the whole upload; still
+      // parse and save the skills so the user isn't blocked locally.
+      logger.error(`R2 upload failed: ${err.message}`);
+      fileKey = `local-unstored/${userId}/${Date.now()}.${ext}`;
+      storageWarning = 'File storage is unavailable; the file was not persisted, but skills were saved.';
+    }
   } else {
     fileKey = `local-unstored/${userId}/${Date.now()}.${ext}`;
     storageWarning = 'File storage (R2) is not configured; the file was not persisted.';
@@ -105,6 +114,9 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
       isActive: true,
     },
   });
+
+  // New skills change scoring — re-match this user against all active jobs.
+  await rematchUser(userId).catch((e) => logger.error(`rematch after upload: ${e.message}`));
 
   return res.status(201).json({
     skills: resume.skills,
@@ -155,6 +167,10 @@ router.patch('/skills', requireAuth, async (req, res) => {
     where: { id: active.id },
     data: { skills: result.data.skills },
   });
+
+  // Manual skill edits change scoring — re-match this user.
+  await rematchUser(req.session.userId).catch((e) => logger.error(`rematch after skills: ${e.message}`));
+
   return res.json(publicResume(updated));
 });
 

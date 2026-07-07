@@ -1,6 +1,9 @@
-// /api/internal/* — cron-triggered internal endpoints.
-// Full implementation (trigger-fetch) arrives in Week 3.
+// /api/internal/* — cron-triggered internal endpoints, guarded by CRON_SECRET.
+// The external backup scheduler (and local manual testing) hit trigger-fetch to
+// run the daily fetch on demand without waiting for the 05:00 UTC repeatable job.
 const express = require('express');
+const logger = require('../logger');
+const { runDailyJobFetch } = require('../../jobs/dailyJobFetch');
 
 const router = express.Router();
 
@@ -13,8 +16,10 @@ function requireCronSecret(req, res, next) {
   return next();
 }
 
-router.post('/trigger-fetch', requireCronSecret, (req, res) => {
-  res.status(501).json({ message: 'Built in Week 3' });
+router.post('/trigger-fetch', requireCronSecret, async (req, res) => {
+  logger.info('internal: trigger-fetch invoked');
+  const result = await runDailyJobFetch();
+  return res.json({ ok: true, ...result });
 });
 
 module.exports = router;

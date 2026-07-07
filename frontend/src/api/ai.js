@@ -1,6 +1,6 @@
 import api from '../lib/axios';
 
-const USE_MOCK = true; // flip to false when backend is ready
+const USE_MOCK = false; // live backend (Week 5)
 
 const delay = (ms = 300) => new Promise((r) => setTimeout(r, ms));
 

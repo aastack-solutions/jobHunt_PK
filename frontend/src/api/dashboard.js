@@ -6,7 +6,7 @@ import {
   mockSchedulerLog,
 } from '../mocks/mockDashboard';
 
-const USE_MOCK = true; // flip to false when backend is ready
+const USE_MOCK = false; // live backend (Week 6)
 
 const delay = (ms = 400) => new Promise((r) => setTimeout(r, ms));
 

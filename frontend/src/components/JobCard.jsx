@@ -5,7 +5,7 @@ import MatchBadge from './MatchBadge';
 import LocationTypePill from './LocationTypePill';
 import { formatSalary } from '../lib/format';
 
-export default function JobCard({ job, onApply, onViewDetails }) {
+export default function JobCard({ job, onApply }) {
   // matchedSkills come from the matching engine (Week 4); until then show the
   // job's own parsed skills.
   const skills = job.matchedSkills?.length ? job.matchedSkills : job.skills || [];
@@ -62,9 +62,14 @@ export default function JobCard({ job, onApply, onViewDetails }) {
         <Button size="sm" className="flex-1" onClick={() => onApply?.(job)}>
           <Sparkles className="h-4 w-4" /> Apply
         </Button>
-        <Button size="sm" variant="secondary" onClick={() => onViewDetails?.(job)}>
+        <a
+          href={job.applyUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-white/70 px-3 py-1.5 text-sm font-semibold text-slate-700 ring-1 ring-inset ring-slate-200 transition-all duration-200 hover:bg-white active:scale-[0.97]"
+        >
           <ExternalLink className="h-4 w-4" /> Details
-        </Button>
+        </a>
       </div>
     </Card>
   );

@@ -1,10 +1,10 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import toast from 'react-hot-toast';
-import { UploadCloud, X, FileText, AlertTriangle, Plus } from 'lucide-react';
+import { UploadCloud, X, FileText, AlertTriangle, Plus, ExternalLink } from 'lucide-react';
 import { QUERY_KEYS } from '../constants/queryKeys';
-import { getResume, getResumeHistory, uploadResume, updateSkills } from '../api/resumes';
+import { getResume, getResumeHistory, uploadResume, updateSkills, getResumeDownloadUrl } from '../api/resumes';
 import Card from '../components/ui/Card';
 import Spinner from '../components/ui/Spinner';
 
@@ -14,15 +14,51 @@ export default function Resume() {
   const [skillInput, setSkillInput] = useState('');
   const [dragging, setDragging] = useState(false);
 
+  // The file picked this session — previewable in a new tab via an object URL,
+  // even without R2 (the just-uploaded file lives only in the browser).
+  const [sessionFile, setSessionFile] = useState(null); // { url, name }
+  const [viewLoadingId, setViewLoadingId] = useState(null);
+  const objectUrlRef = useRef(null);
+
   const { data: resume, isLoading } = useQuery({ queryKey: QUERY_KEYS.RESUMES, queryFn: getResume });
   const { data: history = [] } = useQuery({ queryKey: ['resume-history'], queryFn: getResumeHistory });
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: QUERY_KEYS.RESUMES });
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: QUERY_KEYS.RESUMES });
+    queryClient.invalidateQueries({ queryKey: ['resume-history'] });
+  };
   const upload = useMutation({ mutationFn: uploadResume, onSuccess: () => { invalidate(); toast.success('Resume uploaded'); } });
   const saveSkills = useMutation({ mutationFn: updateSkills, onSuccess: invalidate });
 
+  // Keep the object URL alive until it's replaced or the page unmounts (a new tab
+  // needs it to stay valid), then revoke to avoid leaks.
+  useEffect(() => () => { if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current); }, []);
+
+  const hasResume = Boolean(resume?.fileName);
+
   function onFile(file) {
-    if (file) upload.mutate(file);
+    if (!file) return;
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+    const url = URL.createObjectURL(file);
+    objectUrlRef.current = url;
+    setSessionFile({ url, name: file.name });
+    upload.mutate(file);
+  }
+
+  function openInNewTab(url) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  async function handleView(item) {
+    try {
+      setViewLoadingId(item.id);
+      const url = await getResumeDownloadUrl(item.id);
+      openInNewTab(url);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Could not open this file.');
+    } finally {
+      setViewLoadingId(null);
+    }
   }
 
   function addSkill(e) {
@@ -70,11 +106,31 @@ export default function Resume() {
         <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-blue/15 to-brand-violet/15">
           <UploadCloud className="h-7 w-7 text-brand-violet" />
         </div>
-        <p className="text-sm font-semibold text-slate-700">Drag & drop your resume here</p>
-        <p className="text-xs text-slate-500">or click to browse · PDF / DOCX</p>
+        <p className="text-sm font-semibold text-slate-700">
+          {hasResume ? 'Update your resume' : 'Upload your resume'}
+        </p>
+        <p className="text-xs text-slate-500">
+          {hasResume ? 'Drag & drop a new file, or click to replace · PDF / DOCX' : 'Drag & drop your resume here, or click to browse · PDF / DOCX'}
+        </p>
         {upload.isPending && <p className="mt-2 text-xs font-medium text-brand-violet">Uploading…</p>}
         <input ref={fileRef} type="file" accept=".pdf,.docx" className="hidden" onChange={(e) => onFile(e.target.files[0])} />
       </div>
+
+      {sessionFile && (
+        <Card className="flex items-center justify-between gap-3 py-3">
+          <span className="flex min-w-0 items-center gap-2.5 text-sm text-slate-700">
+            <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand-light">
+              <FileText className="h-4 w-4 text-brand-violet" />
+            </span>
+            <span className="truncate font-medium">{sessionFile.name}</span>
+            <span className="flex-shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">just uploaded</span>
+          </span>
+          <button type="button" onClick={() => openInNewTab(sessionFile.url)}
+            className="inline-flex flex-shrink-0 items-center gap-1.5 rounded-lg bg-white/70 px-3 py-1.5 text-xs font-semibold text-brand-violet ring-1 ring-inset ring-slate-200 transition-all hover:bg-white">
+            <ExternalLink className="h-3.5 w-3.5" /> Preview in new tab
+          </button>
+        </Card>
+      )}
 
       <Card>
         <h3 className="mb-3 text-sm font-bold text-slate-700">Parsed Skills</h3>
@@ -103,15 +159,28 @@ export default function Resume() {
         <h3 className="mb-3 text-sm font-bold text-slate-700">Upload History</h3>
         <ul className="flex flex-col divide-y divide-slate-100/70">
           {history.map((h) => (
-            <li key={h.id} className="flex items-center justify-between py-2.5 text-sm">
-              <span className="flex items-center gap-2.5 text-slate-700">
-                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100">
+            <li key={h.id} className="flex items-center justify-between gap-3 py-2.5 text-sm">
+              <span className="flex min-w-0 items-center gap-2.5 text-slate-700">
+                <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-slate-100">
                   <FileText className="h-4 w-4 text-slate-400" />
                 </span>
-                {h.fileName}
+                <span className="truncate">{h.fileName}</span>
               </span>
-              <span className="text-xs text-slate-400">
-                {format(new Date(h.uploadedAt), 'dd MMM yyyy')} · {h.skillCount} skills
+              <span className="flex flex-shrink-0 items-center gap-3">
+                <span className="text-xs text-slate-400">
+                  {format(new Date(h.uploadedAt), 'dd MMM yyyy')} · {h.skillCount} skills
+                </span>
+                {h.stored ? (
+                  <button type="button" onClick={() => handleView(h)} disabled={viewLoadingId === h.id}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-white/70 px-2.5 py-1.5 text-xs font-semibold text-brand-violet ring-1 ring-inset ring-slate-200 transition-all hover:bg-white disabled:opacity-60">
+                    <ExternalLink className="h-3.5 w-3.5" /> {viewLoadingId === h.id ? 'Opening…' : 'Preview'}
+                  </button>
+                ) : (
+                  <span title="File storage (R2) was not configured when this was uploaded, so the file wasn’t saved."
+                    className="inline-flex cursor-default items-center rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-400 ring-1 ring-inset ring-slate-100">
+                    Not stored
+                  </span>
+                )}
               </span>
             </li>
           ))}

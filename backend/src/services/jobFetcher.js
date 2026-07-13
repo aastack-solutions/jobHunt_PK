@@ -8,11 +8,96 @@
 const crypto = require('crypto');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const RssParser = require('rss-parser');
 const logger = require('../logger');
 const { normalizeCity, classifyLocationType } = require('./cityNormalizer');
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT = 10000;
+
+// Canonical skill vocabulary — MUST mirror resume-parser/main.py SKILLS so that
+// job skills and resume skills share one vocabulary; the matching engine compares
+// them by exact (lowercased) set overlap, so both sides have to speak the same list.
+const SKILLS = [
+  // Languages
+  'javascript', 'typescript', 'python', 'java', 'c++', 'c#', 'go', 'golang',
+  'rust', 'ruby', 'php', 'swift', 'kotlin', 'scala', 'r', 'dart', 'elixir',
+  'bash', 'sql', 'html', 'css', 'sass',
+  // Frontend
+  'react', 'next.js', 'vue', 'nuxt', 'angular', 'svelte', 'redux', 'tailwind',
+  'tailwind css', 'bootstrap', 'vite', 'webpack', 'jquery',
+  // Backend
+  'node.js', 'express', 'nestjs', 'django', 'flask', 'fastapi', 'spring',
+  'spring boot', 'laravel', 'rails', 'ruby on rails', 'graphql', 'rest',
+  'rest apis', 'grpc', 'prisma', 'sequelize',
+  // Databases
+  'postgresql', 'postgres', 'mysql', 'sqlite', 'mongodb', 'redis',
+  'elasticsearch', 'cassandra', 'dynamodb', 'firebase', 'supabase',
+  // Cloud / DevOps
+  'aws', 'azure', 'gcp', 'google cloud', 'docker', 'kubernetes', 'terraform',
+  'ansible', 'jenkins', 'github actions', 'gitlab ci', 'ci/cd', 'nginx',
+  'linux', 'bullmq', 'rabbitmq', 'kafka',
+  // AI / ML
+  'machine learning', 'deep learning', 'tensorflow', 'pytorch', 'keras',
+  'scikit-learn', 'pandas', 'numpy', 'nlp', 'opencv', 'llm',
+  // Mobile
+  'react native', 'flutter', 'android', 'ios', 'xamarin',
+  // Design
+  'figma', 'sketch', 'adobe xd', 'photoshop', 'illustrator', 'ui/ux',
+  // Tools
+  'git', 'jira', 'jest', 'cypress', 'playwright', 'postman', 'agile', 'scrum',
+  // --- Extended vocabulary: captures a job's true stack so unrelated roles score
+  // low instead of matching on one incidental keyword (e.g. a Unity/game job) ---
+  // Games / graphics
+  'unity', 'unreal', 'godot', 'opengl', 'webgl', '3d',
+  // .NET / Microsoft
+  '.net', 'asp.net', 'blazor', 'wpf', 'sharepoint', 'dynamics',
+  // Languages
+  'objective-c', 'perl', 'lua', 'matlab', 'solidity', 'clojure', 'haskell',
+  'groovy', 'cobol', 'visual basic', 'vba', 'assembly',
+  // Backend / web
+  'symfony', 'codeigniter', 'fastify', 'deno', 'phoenix',
+  // Data / ML
+  'spark', 'hadoop', 'airflow', 'snowflake', 'databricks', 'tableau',
+  'power bi', 'hive', 'langchain', 'spacy', 'matplotlib', 'hugging face',
+  // Cloud
+  'cloudflare', 'vercel', 'netlify', 'heroku', 'openshift', 'helm',
+  // Mobile
+  'swiftui', 'ionic', 'cordova',
+  // CMS / commerce
+  'wordpress', 'shopify', 'magento', 'drupal', 'woocommerce', 'contentful', 'strapi',
+  // Enterprise
+  'salesforce', 'sap', 'servicenow', 'workday',
+  // Testing
+  'selenium', 'storybook', 'puppeteer', 'mocha', 'vitest', 'rspec', 'cucumber',
+];
+const SKILL_SET = new Set(SKILLS);
+// Token-boundary regex per skill (not \b — that mishandles c++, c#, node.js, ci/cd).
+// A skill matches only when not glued to another alphanumeric char on either side.
+const SKILL_MATCHERS = SKILLS.map((s) => ({
+  skill: s,
+  re: new RegExp(`(?<![a-z0-9])${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9])`),
+}));
+
+// Extract canonical skills from free text (job title + description).
+function extractSkills(text) {
+  if (!text) return [];
+  const t = String(text).toLowerCase();
+  const out = [];
+  for (const { skill, re } of SKILL_MATCHERS) if (re.test(t)) out.push(skill);
+  return out;
+}
+
+// Job skills for matching: canonical skills found in the title/description, unioned
+// with any source tags that are already in the canonical vocabulary. Noisy source
+// tags (e.g. "accounting", "CRM") are dropped so skill overlap stays meaningful.
+function deriveSkills(title, description, rawTags) {
+  const fromText = extractSkills(`${title} ${description}`);
+  const fromTags = (Array.isArray(rawTags) ? rawTags : [])
+    .map((s) => String(s).toLowerCase().trim())
+    .filter((s) => SKILL_SET.has(s));
+  return [...new Set([...fromText, ...fromTags])].slice(0, 30);
+}
 
 function stripHtml(html) {
   if (!html) return '';
@@ -75,7 +160,7 @@ function normalizeJob(m, platform, locationHint = null) {
     salaryMin: Number.isInteger(m.salaryMin) ? m.salaryMin : null,
     salaryMax: Number.isInteger(m.salaryMax) ? m.salaryMax : null,
     salaryCurrency: m.salaryCurrency || 'USD',
-    skills: Array.isArray(m.skills) ? m.skills.filter(Boolean).map(String).slice(0, 30) : [],
+    skills: deriveSkills(title, description, m.skills),
     applyUrl,
     postedAt: toDate(m.postedAt),
     expiresAt: new Date(Date.now() + THIRTY_DAYS_MS),
@@ -211,6 +296,198 @@ async function fetchJoobleRemote() {
   } catch (err) { logger.error(`jooble: ${err.message}`); return []; }
 }
 
+// RemoteOK — public JSON API of remote jobs (no key). The first array element is a
+// legal/metadata object (not a job), so it's dropped. A descriptive User-Agent is
+// required or the endpoint blocks the request. ToS asks for attribution (kept in README).
+async function fetchRemoteOK() {
+  try {
+    const { data } = await axios.get('https://remoteok.com/api', {
+      timeout: REQUEST_TIMEOUT,
+      headers: { 'User-Agent': SCRAPER_UA, Accept: 'application/json' },
+    });
+    const rows = Array.isArray(data) ? data.slice(1) : []; // element 0 is metadata
+    if (!rows.length) { logger.warn('remoteok: 0 jobs'); return []; }
+    return rows
+      .map((j) => normalizeJob({
+        externalId: j.id || j.slug,
+        title: j.position,
+        company: j.company,
+        description: j.description,
+        rawLocation: j.location,
+        skills: j.tags,
+        salaryMin: j.salary_min > 0 ? j.salary_min : null,
+        salaryMax: j.salary_max > 0 ? j.salary_max : null,
+        salaryCurrency: 'USD',
+        applyUrl: j.apply_url || j.url,
+        postedAt: j.date,
+      }, 'remoteok'))
+      .filter(Boolean);
+  } catch (err) { logger.error(`remoteok: ${err.message}`); return []; }
+}
+
+// We Work Remotely — official RSS feed (no scraping, no key). Item titles arrive as
+// "Company: Job Title", so we split on the first ": " to recover the company name.
+async function fetchWeWorkRemotely() {
+  try {
+    const parser = new RssParser({ timeout: REQUEST_TIMEOUT, headers: { 'User-Agent': SCRAPER_UA } });
+    const feed = await parser.parseURL('https://weworkremotely.com/remote-jobs.rss');
+    const items = feed?.items || [];
+    if (!items.length) { logger.warn('weworkremotely: 0 jobs'); return []; }
+    return items
+      .map((it) => {
+        const raw = (it.title || '').trim();
+        const sep = raw.indexOf(': ');
+        const company = sep > 0 ? raw.slice(0, sep).trim() : '';
+        const title = sep > 0 ? raw.slice(sep + 2).trim() : raw;
+        return normalizeJob({
+          externalId: it.guid || it.link,
+          title,
+          company,
+          description: it.contentSnippet || it.content || '',
+          rawLocation: Array.isArray(it.categories) ? it.categories.join(', ') : null,
+          skills: it.categories,
+          applyUrl: it.link,
+          postedAt: it.isoDate || it.pubDate,
+        }, 'weworkremotely');
+      })
+      .filter(Boolean);
+  } catch (err) { logger.error(`weworkremotely: ${err.message}`); return []; }
+}
+
+// JSearch (RapidAPI) — aggregates many boards via Google for Jobs. The free tier is
+// quota-limited (~200 requests/month), so we make ONE query per fetch. v5 uses the
+// /search-v2 endpoint and nests results under data.jobs; we keep only remote roles.
+// Inactive until RAPIDAPI_KEY is set (skips gracefully like Adzuna/Jooble).
+async function fetchJSearch() {
+  const key = process.env.RAPIDAPI_KEY;
+  if (!key) { logger.warn('jsearch: RAPIDAPI_KEY not set — skipped'); return []; }
+  try {
+    const { data } = await axios.get('https://jsearch.p.rapidapi.com/search-v2', {
+      timeout: REQUEST_TIMEOUT,
+      params: { query: 'remote developer', num_pages: '1', country: 'us', date_posted: 'week' },
+      headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' },
+    });
+    // v5 nests jobs under data.jobs; older versions returned data as the array.
+    const rows = data?.data?.jobs || (Array.isArray(data?.data) ? data.data : []);
+    const jobs = rows.filter((j) => j.job_is_remote !== false); // drop stray onsite roles
+    if (!jobs.length) { logger.warn('jsearch: 0 jobs'); return []; }
+    return jobs
+      .map((j) => normalizeJob({
+        externalId: j.job_id,
+        title: j.job_title,
+        company: j.employer_name,
+        description: j.job_description,
+        rawLocation: [j.job_city, j.job_state, j.job_country].filter(Boolean).join(', ') || null,
+        employmentType: j.job_employment_type,
+        salaryMin: Number.isFinite(j.job_min_salary) ? Math.round(j.job_min_salary) : null,
+        salaryMax: Number.isFinite(j.job_max_salary) ? Math.round(j.job_max_salary) : null,
+        salaryCurrency: j.job_salary_currency || 'USD',
+        applyUrl: j.job_apply_link,
+        postedAt: j.job_posted_at_timestamp ? j.job_posted_at_timestamp * 1000 : null,
+      }, 'jsearch'))
+      .filter(Boolean);
+  } catch (err) { logger.error(`jsearch: ${err.message}`); return []; }
+}
+
+// ---------------- ATS boards (per-company public JSON, no key) ----------------
+//
+// Each ATS exposes a public jobs endpoint per company. There is no "all jobs" call,
+// so we keep a curated list of remote-hiring companies and query each. These boards
+// list onsite roles too, so we keep only the ones flagged/located remote (Remote pool).
+// Add slugs to any list below to expand coverage — verified live before shipping.
+const GREENHOUSE_BOARDS = [
+  'airbnb', 'stripe', 'coinbase', 'databricks', 'reddit', 'discord', 'asana',
+  'cloudflare', 'gitlab', 'dropbox', 'instacart', 'gusto', 'samsara', 'affirm',
+  'vercel', 'postman',
+];
+const LEVER_BOARDS = ['spotify']; // Lever customer slugs (extensible)
+const WORKABLE_BOARDS = []; // Workable account subdomains with active public jobs (add verified slugs)
+
+const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+// Greenhouse — boards-api.greenhouse.io. `content=true` includes the HTML description
+// (stripHtml handles it). location.name carries the remote signal.
+async function fetchGreenhouseBoards() {
+  const out = [];
+  await Promise.all(GREENHOUSE_BOARDS.map(async (board) => {
+    try {
+      const { data } = await axios.get(
+        `https://boards-api.greenhouse.io/v1/boards/${board}/jobs?content=true`,
+        { timeout: 15000 }
+      );
+      for (const j of data?.jobs || []) {
+        const loc = j.location?.name || '';
+        if (!/remote|anywhere|distributed/i.test(loc)) continue; // Remote pool only
+        const norm = normalizeJob({
+          externalId: `gh_${board}_${j.id}`,
+          title: j.title,
+          company: cap(board),
+          description: j.content,
+          rawLocation: loc,
+          applyUrl: j.absolute_url,
+          postedAt: j.updated_at,
+        }, 'greenhouse');
+        if (norm) out.push(norm);
+      }
+    } catch (err) { logger.error(`greenhouse ${board}: ${err.message}`); }
+  }));
+  return out;
+}
+
+// Lever — api.lever.co/v0/postings. workplaceType flags remote directly.
+async function fetchLeverBoards() {
+  const out = [];
+  await Promise.all(LEVER_BOARDS.map(async (board) => {
+    try {
+      const { data } = await axios.get(`https://api.lever.co/v0/postings/${board}?mode=json`, { timeout: REQUEST_TIMEOUT });
+      for (const j of Array.isArray(data) ? data : []) {
+        const locTxt = j.categories?.location || '';
+        if ((j.workplaceType || '').toLowerCase() !== 'remote' && !/remote/i.test(locTxt)) continue;
+        const norm = normalizeJob({
+          externalId: `lever_${board}_${j.id}`,
+          title: j.text,
+          company: cap(board),
+          description: j.descriptionPlain || j.description || '',
+          rawLocation: locTxt,
+          employmentType: j.categories?.commitment,
+          applyUrl: j.applyUrl || j.hostedUrl,
+          postedAt: j.createdAt, // ms epoch
+        }, 'lever');
+        if (norm) out.push(norm);
+      }
+    } catch (err) { logger.error(`lever ${board}: ${err.message}`); }
+  }));
+  return out;
+}
+
+// Workable — apply.workable.com widget API. Inactive until WORKABLE_BOARDS has slugs
+// with active public jobs (endpoint is public and returns 200; only the account list
+// needs seeding, like the key-gated sources).
+async function fetchWorkableBoards() {
+  const out = [];
+  await Promise.all(WORKABLE_BOARDS.map(async (account) => {
+    try {
+      const { data } = await axios.get(`https://apply.workable.com/api/v1/widget/accounts/${account}?details=true`, { timeout: REQUEST_TIMEOUT });
+      const name = data?.name || cap(account);
+      for (const j of data?.jobs || []) {
+        const locTxt = j.location?.location_str || [j.city, j.country].filter(Boolean).join(', ') || '';
+        if (!(j.remote || j.telecommuting || /remote/i.test(locTxt))) continue;
+        const norm = normalizeJob({
+          externalId: `wk_${account}_${j.shortcode || j.id}`,
+          title: j.title,
+          company: name,
+          description: j.description || '',
+          rawLocation: locTxt,
+          applyUrl: j.url || j.application_url || j.shortlink,
+          postedAt: j.published_on || j.created_at,
+        }, 'workable');
+        if (norm) out.push(norm);
+      }
+    } catch (err) { logger.error(`workable ${account}: ${err.message}`); }
+  }));
+  return out;
+}
+
 // ---------------- Karachi onsite source ----------------
 //
 // Mustakbil's Karachi listing is server-rendered (job cards are in the initial
@@ -295,7 +572,11 @@ async function fetchKarachiSources() {
 
 async function fetchAllJobs() {
   // API-backed remote sources run in parallel.
-  const apiFetchers = [fetchRemotive, fetchArbeitnow, fetchHimalayas, fetchAdzunaRemote, fetchJoobleRemote];
+  const apiFetchers = [
+    fetchRemotive, fetchArbeitnow, fetchHimalayas, fetchAdzunaRemote, fetchJoobleRemote,
+    fetchRemoteOK, fetchWeWorkRemotely, fetchJSearch,
+    fetchGreenhouseBoards, fetchLeverBoards, fetchWorkableBoards,
+  ];
   const settled = await Promise.allSettled(apiFetchers.map((fn) => fn()));
   const fromApis = settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
 
@@ -310,4 +591,4 @@ async function fetchAllJobs() {
   return { jobs, sourceBreakdown };
 }
 
-module.exports = { fetchAllJobs, normalizeJob };
+module.exports = { fetchAllJobs, normalizeJob, extractSkills, deriveSkills };

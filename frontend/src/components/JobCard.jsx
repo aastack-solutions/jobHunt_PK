@@ -3,7 +3,7 @@ import Card from './ui/Card';
 import Button from './ui/Button';
 import MatchBadge from './MatchBadge';
 import LocationTypePill from './LocationTypePill';
-import { formatSalary } from '../lib/format';
+import { formatSalary, postedAgo, isFresh } from '../lib/format';
 
 export default function JobCard({ job, onApply }) {
   // matchedSkills come from the matching engine (Week 4); until then show the
@@ -11,6 +11,11 @@ export default function JobCard({ job, onApply }) {
   const skills = job.matchedSkills?.length ? job.matchedSkills : job.skills || [];
   const visible = skills.slice(0, 4);
   const overflow = skills.length - visible.length;
+
+  // Freshness: prefer the employer's post date, fall back to when we fetched it.
+  const postedDate = job.postedAt || job.fetchedAt;
+  const ageLabel = postedAgo(postedDate);
+  const fresh = isFresh(postedDate, 24);
 
   return (
     <Card hover className="flex flex-col gap-4">
@@ -29,6 +34,14 @@ export default function JobCard({ job, onApply }) {
         <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-600 ring-1 ring-inset ring-slate-200">
           {job.platform}
         </span>
+        {fresh && (
+          <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-bold text-emerald-600 ring-1 ring-inset ring-emerald-200">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> New{ageLabel ? ` · ${ageLabel}` : ''}
+          </span>
+        )}
+        {ageLabel && !fresh && (
+          <span className="text-xs font-medium text-slate-400">{ageLabel}</span>
+        )}
         {job.distanceKm != null && (
           <span className="flex items-center gap-1 text-xs font-medium text-slate-500">
             <MapPin className="h-3 w-3" /> {job.distanceKm} km

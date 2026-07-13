@@ -24,6 +24,13 @@ function extOf(filename) {
   return m ? m[1].toLowerCase() : 'pdf';
 }
 
+// A resume is previewable only if its file actually landed in R2. Uploads made
+// while R2 was unconfigured get a `local-unstored/...` placeholder key and have
+// no retrievable file.
+function isStored(fileKey) {
+  return Boolean(fileKey) && !fileKey.startsWith('local-unstored/');
+}
+
 function publicResume(r) {
   return {
     id: r.id,
@@ -34,6 +41,7 @@ function publicResume(r) {
     isImageBased: r.isImageBased,
     parseWarning: r.parseWarning,
     uploadedAt: r.uploadedAt,
+    stored: isStored(r.fileKey),
   };
 }
 
@@ -146,8 +154,25 @@ router.get('/', requireAuth, async (req, res) => {
       fileName: r.fileName,
       uploadedAt: r.uploadedAt,
       skillCount: r.skills.length,
+      stored: isStored(r.fileKey),
     }))
   );
+});
+
+// Preview/download a stored resume — returns a short-lived signed R2 URL.
+// 409 when the file was never persisted (R2 unconfigured at upload time).
+router.get('/:id/download', requireAuth, async (req, res) => {
+  const resume = await prisma.resume.findFirst({
+    where: { id: req.params.id, userId: req.session.userId },
+  });
+  if (!resume) return res.status(404).json({ error: 'Resume not found' });
+  if (!isStored(resume.fileKey) || !storage.isConfigured()) {
+    return res.status(409).json({
+      error: 'This file was not stored (file storage is not configured), so it cannot be previewed.',
+    });
+  }
+  const url = await storage.getDownloadUrl(resume.fileKey);
+  return res.json({ url });
 });
 
 const skillsSchema = z.object({ skills: z.array(z.string().min(1)).max(100) });

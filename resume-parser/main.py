@@ -50,6 +50,29 @@ SKILLS = [
     "figma", "sketch", "adobe xd", "photoshop", "illustrator", "ui/ux",
     # Tools
     "git", "jira", "jest", "cypress", "playwright", "postman", "agile", "scrum",
+    # --- Extended vocabulary (mirrors backend/src/services/jobFetcher.js SKILLS) ---
+    # Games / graphics
+    "unity", "unreal", "godot", "opengl", "webgl", "3d",
+    # .NET / Microsoft
+    ".net", "asp.net", "blazor", "wpf", "sharepoint", "dynamics",
+    # Languages
+    "objective-c", "perl", "lua", "matlab", "solidity", "clojure", "haskell",
+    "groovy", "cobol", "visual basic", "vba", "assembly",
+    # Backend / web
+    "symfony", "codeigniter", "fastify", "deno", "phoenix",
+    # Data / ML
+    "spark", "hadoop", "airflow", "snowflake", "databricks", "tableau",
+    "power bi", "hive", "langchain", "spacy", "matplotlib", "hugging face",
+    # Cloud
+    "cloudflare", "vercel", "netlify", "heroku", "openshift", "helm",
+    # Mobile
+    "swiftui", "ionic", "cordova",
+    # CMS / commerce
+    "wordpress", "shopify", "magento", "drupal", "woocommerce", "contentful", "strapi",
+    # Enterprise
+    "salesforce", "sap", "servicenow", "workday",
+    # Testing
+    "selenium", "storybook", "puppeteer", "mocha", "vitest", "rspec", "cucumber",
 ]
 
 EXPERIENCE_PATTERNS = [

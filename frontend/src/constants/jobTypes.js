@@ -10,3 +10,11 @@ export const MATCH_LABELS = {
 
 // Live sources. adzuna = Karachi onsite pool (activates when ADZUNA keys are set).
 export const PLATFORMS = ['remotive', 'arbeitnow', 'himalayas', 'adzuna'];
+
+// Freshness filter — value is "posted within N days" ('' = any / full 30-day pool).
+export const FRESHNESS_OPTIONS = [
+  { value: '1', label: 'Posted: last 24h' },
+  { value: '3', label: 'Posted: last 3 days' },
+  { value: '7', label: 'Posted: last 7 days' },
+  { value: '', label: 'Posted: any time' },
+];

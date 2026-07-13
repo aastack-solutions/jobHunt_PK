@@ -15,7 +15,12 @@ export async function getApplications(filters = {}) {
     if (filters.locationType) result = result.filter((a) => a.locationType === filters.locationType);
     return result;
   }
-  const { data } = await api.get('/applications', { params: filters });
+  // Only send set filters — the backend validates status/locationType as enums and
+  // rejects empty strings (400), so blank "All statuses"/"All locations" must be omitted.
+  const params = {};
+  if (filters.status) params.status = filters.status;
+  if (filters.locationType) params.locationType = filters.locationType;
+  const { data } = await api.get('/applications', { params });
   return data;
 }
 

@@ -43,3 +43,10 @@ export async function updateSkills(skills) {
   const { data } = await api.patch('/resumes/skills', { skills });
   return data;
 }
+
+// Returns a short-lived signed URL for a stored resume, or throws (409) when the
+// file was never persisted (R2 not configured at upload time).
+export async function getResumeDownloadUrl(id) {
+  const { data } = await api.get(`/resumes/${id}/download`);
+  return data.url;
+}

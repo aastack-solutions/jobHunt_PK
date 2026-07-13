@@ -17,13 +17,19 @@ function isEligible(job, user) {
 
 // ---- Stage 2: scoring sub-factors ----
 
-// Skill (55%): no user skills → 0 (warn) | no job skills → 60 | else matched/total×100
+// Skill (55%): no user skills → 0 (warn) | no job skills → 60 | else matched/total×100.
+// Smoothing (deviation from the raw spec formula): the denominator is floored at
+// MIN_SKILL_DENOM so a job with only 1–2 extracted skills can't reach 100% off a
+// single incidental keyword match (e.g. a Unity/game job that only surfaced "ios").
+// Jobs with ≥ MIN_SKILL_DENOM skills are scored exactly as the spec's matched/total.
+const MIN_SKILL_DENOM = 4;
 function computeSkill(userSkills, jobSkills) {
   if (!userSkills || userSkills.length === 0) return { score: 0, matched: [], warn: true };
   if (!jobSkills || jobSkills.length === 0) return { score: 60, matched: [], warn: false };
   const have = new Set(userSkills.map((s) => String(s).toLowerCase().trim()));
   const matched = jobSkills.filter((s) => have.has(String(s).toLowerCase().trim()));
-  return { score: Math.round((matched.length / jobSkills.length) * 100), matched, warn: false };
+  const denom = Math.max(jobSkills.length, MIN_SKILL_DENOM);
+  return { score: Math.round((matched.length / denom) * 100), matched, warn: false };
 }
 
 // Pull a required-years number from the job text (no dedicated field exists).

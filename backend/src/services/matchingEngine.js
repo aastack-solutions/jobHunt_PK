@@ -32,6 +32,52 @@ function computeSkill(userSkills, jobSkills) {
   return { score: Math.round((matched.length / denom) * 100), matched, warn: false };
 }
 
+// ---- Role/title relevance (skill-driven) ----
+// Job titles carry role words ("MERN Stack Developer", "AI Engineer", "Flutter
+// Developer", "Data Scraper") that the skill vocabulary doesn't capture. A job whose
+// TITLE matches a role family the candidate's skills place them in gets a strong
+// skill-score floor, so obviously-relevant roles rank well even when their extracted
+// skill list is sparse. Each family activates only if the candidate has its skills,
+// so it adapts per résumé (Flutter jobs only surface for a Flutter candidate, etc.).
+const ROLE_FAMILIES = [
+  { skills: ['react', 'vue', 'angular', 'svelte', 'javascript', 'typescript', 'html', 'css', 'tailwind', 'next.js', 'redux'],
+    titles: ['frontend', 'front end', 'front-end', 'web developer', 'web dev', 'ui developer', 'ui engineer', 'react developer'] },
+  { skills: ['react', 'node.js', 'express', 'mongodb', 'nestjs', 'graphql'], min: 2,
+    titles: ['full stack', 'fullstack', 'full-stack', 'mern', 'mean'] },
+  { skills: ['node.js', 'express', 'django', 'flask', 'fastapi', 'spring', 'laravel', 'rails', 'go', 'java', 'php'],
+    titles: ['backend', 'back end', 'back-end', 'api developer', 'server-side'] },
+  { skills: ['llm', 'langchain', 'nlp', 'tensorflow', 'pytorch', 'keras', 'machine learning', 'deep learning', 'opencv', 'hugging face', 'transformers'],
+    titles: ['ai engineer', 'ml engineer', 'machine learning', 'deep learning', 'ai developer', 'ai/ml', 'generative ai', 'llm', 'nlp', 'data scientist', 'prompt engineer'] },
+  { skills: ['selenium', 'puppeteer', 'playwright', 'scrapy', 'beautifulsoup'],
+    titles: ['scraper', 'scraping', 'web scraping', 'data scraper', 'automation', 'rpa', 'qa automation', 'test automation'] },
+  { skills: ['flutter', 'dart', 'react native', 'swift', 'kotlin', 'android', 'ios', 'swiftui', 'ionic'],
+    titles: ['flutter', 'mobile developer', 'mobile engineer', 'android developer', 'ios developer', 'react native'] },
+  { skills: ['pandas', 'numpy', 'sql', 'r', 'tableau', 'power bi', 'spark', 'hadoop'],
+    titles: ['data analyst', 'data engineer', 'analytics engineer'] },
+  { skills: ['docker', 'kubernetes', 'terraform', 'ansible', 'jenkins', 'aws', 'azure', 'gcp', 'ci/cd'],
+    titles: ['devops', 'sre', 'site reliability', 'cloud engineer', 'platform engineer', 'infrastructure engineer'] },
+];
+// Softer boost when the candidate is clearly technical but the title is generic.
+const GENERIC_DEV_TITLES = ['software engineer', 'software developer', 'web developer', 'programmer', 'application developer'];
+const DEV_SKILL_HINT = ['javascript', 'typescript', 'python', 'java', 'react', 'node.js', 'php', 'go', 'c#', 'ruby'];
+const STRONG_ROLE_SCORE = 90;
+const GENERIC_ROLE_SCORE = 68;
+
+function computeRoleScore(userSkills, jobTitle) {
+  if (!userSkills || userSkills.length === 0) return 0;
+  const have = new Set(userSkills.map((s) => String(s).toLowerCase().trim()));
+  const title = String(jobTitle || '').toLowerCase();
+  for (const fam of ROLE_FAMILIES) {
+    const hits = fam.skills.filter((s) => have.has(s)).length;
+    if (hits < (fam.min || 1)) continue; // candidate not in this family
+    if (fam.titles.some((t) => title.includes(t))) return STRONG_ROLE_SCORE;
+  }
+  if ([...have].some((s) => DEV_SKILL_HINT.includes(s)) && GENERIC_DEV_TITLES.some((t) => title.includes(t))) {
+    return GENERIC_ROLE_SCORE;
+  }
+  return 0;
+}
+
 // Pull a required-years number from the job text (no dedicated field exists).
 function extractRequiredYears(job) {
   const text = `${job.title || ''} ${job.description || ''}`;
@@ -66,12 +112,16 @@ async function computeSalary(job, user) {
 
 async function calculateMatch(job, user, resume) {
   const skill = computeSkill(resume?.skills, job.skills);
+  // Title/role relevance floors the skill score so role-relevant jobs surface even
+  // when their extracted skill list is thin.
+  const roleScore = computeRoleScore(resume?.skills, job.title);
+  const skillScore = Math.max(skill.score, roleScore);
   const experience = computeExperience(resume?.experienceYears, extractRequiredYears(job));
   const salary = await computeSalary(job, user);
-  const matchScore = Math.round(skill.score * 0.55 + experience * 0.3 + salary * 0.15);
+  const matchScore = Math.round(skillScore * 0.55 + experience * 0.3 + salary * 0.15);
   return {
     matchScore,
-    skillScore: skill.score,
+    skillScore,
     experienceScore: experience,
     salaryScore: salary,
     matchedSkills: skill.matched,

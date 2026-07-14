@@ -70,6 +70,7 @@ const SKILLS = [
   'salesforce', 'sap', 'servicenow', 'workday',
   // Testing
   'selenium', 'storybook', 'puppeteer', 'mocha', 'vitest', 'rspec', 'cucumber',
+  'scrapy', 'beautifulsoup',
 ];
 const SKILL_SET = new Set(SKILLS);
 // Token-boundary regex per skill (not \b — that mishandles c++, c#, node.js, ci/cd).
@@ -402,6 +403,10 @@ const GREENHOUSE_BOARDS = [
 ];
 const LEVER_BOARDS = ['spotify']; // Lever customer slugs (extensible)
 const WORKABLE_BOARDS = []; // Workable account subdomains with active public jobs (add verified slugs)
+const ASHBY_BOARDS = [
+  'openai', 'notion', 'ramp', 'vanta', 'cohere', 'replit', 'supabase', 'linear',
+  'posthog', 'baseten', 'watershed', 'multiverse', 'airbyte', 'render', 'clipboard', 'runway',
+];
 
 const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
@@ -486,6 +491,54 @@ async function fetchWorkableBoards() {
     } catch (err) { logger.error(`workable ${account}: ${err.message}`); }
   }));
   return out;
+}
+
+// Ashby — api.ashbyhq.com posting API. `isRemote` flags remote directly and
+// descriptionPlain gives clean text. High-signal boards (OpenAI, Notion, Ramp,
+// Vanta, Cohere, Replit, Supabase, …).
+async function fetchAshbyBoards() {
+  const out = [];
+  await Promise.all(ASHBY_BOARDS.map(async (board) => {
+    try {
+      const { data } = await axios.get(`https://api.ashbyhq.com/posting-api/job-board/${board}`, { timeout: REQUEST_TIMEOUT });
+      for (const j of data?.jobs || []) {
+        if (!(j.isRemote || /remote/i.test(j.location || ''))) continue; // Remote pool only
+        const norm = normalizeJob({
+          externalId: `ashby_${board}_${j.id}`,
+          title: j.title,
+          company: cap(board),
+          description: j.descriptionPlain || j.descriptionHtml || '',
+          rawLocation: j.location,
+          employmentType: j.employmentType,
+          applyUrl: j.applyUrl || j.jobUrl,
+          postedAt: j.publishedAt,
+        }, 'ashby');
+        if (norm) out.push(norm);
+      }
+    } catch (err) { logger.error(`ashby ${board}: ${err.message}`); }
+  }));
+  return out;
+}
+
+// Working Nomads — single public JSON endpoint of curated remote jobs (no key, no slugs).
+async function fetchWorkingNomads() {
+  try {
+    const { data } = await axios.get('https://www.workingnomads.com/api/exposed_jobs/', { timeout: REQUEST_TIMEOUT });
+    const jobs = Array.isArray(data) ? data : (data?.jobs || []);
+    if (!jobs.length) { logger.warn('workingnomads: 0 jobs'); return []; }
+    return jobs
+      .map((j) => normalizeJob({
+        externalId: j.url,
+        title: j.title,
+        company: j.company_name,
+        description: j.description,
+        rawLocation: j.location,
+        skills: typeof j.tags === 'string' ? j.tags.split(',').map((t) => t.trim()) : j.tags,
+        applyUrl: j.url,
+        postedAt: j.pub_date,
+      }, 'workingnomads'))
+      .filter(Boolean);
+  } catch (err) { logger.error(`workingnomads: ${err.message}`); return []; }
 }
 
 // ---------------- Karachi onsite source ----------------
@@ -574,8 +627,8 @@ async function fetchAllJobs() {
   // API-backed remote sources run in parallel.
   const apiFetchers = [
     fetchRemotive, fetchArbeitnow, fetchHimalayas, fetchAdzunaRemote, fetchJoobleRemote,
-    fetchRemoteOK, fetchWeWorkRemotely, fetchJSearch,
-    fetchGreenhouseBoards, fetchLeverBoards, fetchWorkableBoards,
+    fetchRemoteOK, fetchWeWorkRemotely, fetchJSearch, fetchWorkingNomads,
+    fetchGreenhouseBoards, fetchLeverBoards, fetchWorkableBoards, fetchAshbyBoards,
   ];
   const settled = await Promise.allSettled(apiFetchers.map((fn) => fn()));
   const fromApis = settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));

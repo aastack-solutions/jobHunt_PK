@@ -8,8 +8,12 @@ export const MATCH_LABELS = {
   LOW: { label: 'Low', min: 0 },
 };
 
-// Live sources. adzuna = Karachi onsite pool (activates when ADZUNA keys are set).
-export const PLATFORMS = ['remotive', 'arbeitnow', 'himalayas', 'adzuna'];
+// Live sources for the platform filter. Remote pool + Karachi (mustakbil).
+export const PLATFORMS = [
+  'remotive', 'arbeitnow', 'himalayas', 'adzuna', 'jooble',
+  'remoteok', 'weworkremotely', 'jsearch', 'workingnomads',
+  'greenhouse', 'lever', 'ashby', 'mustakbil',
+];
 
 // Freshness filter — value is "posted within N days" ('' = any / full 30-day pool).
 export const FRESHNESS_OPTIONS = [

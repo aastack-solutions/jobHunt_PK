@@ -73,6 +73,7 @@ SKILLS = [
     "salesforce", "sap", "servicenow", "workday",
     # Testing
     "selenium", "storybook", "puppeteer", "mocha", "vitest", "rspec", "cucumber",
+    "scrapy", "beautifulsoup",
 ]
 
 EXPERIENCE_PATTERNS = [

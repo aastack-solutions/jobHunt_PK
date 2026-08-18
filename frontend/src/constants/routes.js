@@ -4,6 +4,7 @@ export const ROUTES = {
   SIGNUP: '/signup',
   JOBS: '/jobs',
   APPLICATIONS: '/applications',
+  AUTO_APPLY: '/auto-apply',
   INTERVIEWS: '/interviews',
   RESUME: '/resume',
   SETTINGS: '/settings',

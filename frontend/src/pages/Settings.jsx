@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { SlidersHorizontal, Wallet, UserCog } from 'lucide-react';
+import { SlidersHorizontal, Wallet, UserCog, KeyRound } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { updatePreferences } from '../api/users';
 import { CURRENCIES } from '../constants/currencies';
@@ -80,6 +80,29 @@ export default function Settings() {
       <Card className="flex flex-col gap-5">
         <SectionHeader icon={UserCog} title="Account" />
         <Select label="Timezone" name="timezone" options={TIMEZONES} value={form.timezone} onChange={(e) => update('timezone', e.target.value)} />
+      </Card>
+
+      {/*
+        F11 (Auto-Apply Credentials) — scaffolded 2026-08-17, not implemented.
+        docs/apply-bot/TECHNICAL_PLAN.md F11's "Technical approach": follow this
+        file's own conventions (react-hook-form + Zod, matching the pattern used
+        elsewhere in this file) for a per-platform credential CRUD form.
+        The backend API already exists and is fully built —
+        frontend/src/api/applyBot.js's getApplyCredentials/upsertApplyCredential/
+        deleteApplyCredential — this section just needs the UI wired to it:
+          1. List existing credentials (platform, isActive, hasSessionState —
+             NEVER the secret itself, the API already never returns it)
+          2. A small form per platform (username/password) using PUT
+          3. A delete action per row
+        TEST_PLAN.md's F11 checklist has the exact acceptance criteria.
+      */}
+      <Card className="flex flex-col gap-5">
+        <SectionHeader icon={KeyRound} title="Auto-Apply Credentials" />
+        <p className="text-xs text-slate-500">
+          Per-platform logins the auto-apply bot uses to fill Greenhouse/Lever/Ashby
+          applications on your behalf. Not implemented yet — see this file's own
+          comment above for what's already built (the API) versus what's left (this UI).
+        </p>
       </Card>
 
       <div className="flex justify-end">

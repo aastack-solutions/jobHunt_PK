@@ -1,4 +1,5 @@
 import { format } from 'date-fns';
+import { Bot, Ghost } from 'lucide-react';
 import LocationTypePill from './LocationTypePill';
 import StatusPill from './StatusPill';
 import { APP_STATUSES } from '../constants/appStatus';
@@ -8,7 +9,19 @@ export default function ApplicationRow({ application, onStatusChange }) {
   return (
     <tr className="border-b border-slate-100/70 text-sm transition-colors hover:bg-white/50">
       <td className="px-4 py-3.5">
-        <p className="font-semibold text-slate-800">{application.jobTitle}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="font-semibold text-slate-800">{application.jobTitle}</p>
+          {application.source === 'auto_apply_bot' && (
+            <span title="Submitted by the auto-apply bot" className="flex h-4 w-4 items-center justify-center rounded bg-violet-100 text-violet-600">
+              <Bot className="h-2.5 w-2.5" />
+            </span>
+          )}
+          {application.isGhosted && (
+            <span title="No update in a while — likely ghosted" className="flex h-4 w-4 items-center justify-center rounded bg-slate-200 text-slate-500">
+              <Ghost className="h-2.5 w-2.5" />
+            </span>
+          )}
+        </div>
         <p className="text-xs text-slate-500">{application.company}</p>
       </td>
       <td className="px-4 py-3.5">

@@ -40,7 +40,7 @@ export default function Dashboard() {
     return <div className="flex justify-center py-24"><Spinner size="lg" /></div>;
   }
 
-  const { stats, funnel, weekly, schedulerLog } = data;
+  const { stats, funnel, weekly, schedulerLog, applyBotNeedsReview } = data;
   const funnelData = {
     labels: funnel.labels,
     datasets: [{ label: tab, data: pickSeries(funnel, tab), backgroundColor: chartPalette.violet, borderRadius: 8, maxBarThickness: 38 }],
@@ -56,7 +56,11 @@ export default function Dashboard() {
 
   return (
     <div className="flex flex-col gap-6">
-      <SchedulerAlert lastRunAt={schedulerLog?.lastRunAt} />
+      <SchedulerAlert
+        lastRunAt={schedulerLog?.lastRunAt}
+        applyBotLastRunAt={schedulerLog?.applyBotLastRunAt}
+        applyBotNeedsReview={applyBotNeedsReview}
+      />
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>

@@ -9,6 +9,7 @@ import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
 import Jobs from './pages/Jobs';
 import Applications from './pages/Applications';
+import AutoApply from './pages/AutoApply';
 import Interviews from './pages/Interviews';
 import Resume from './pages/Resume';
 import Settings from './pages/Settings';
@@ -48,6 +49,7 @@ export default function App() {
       <Route path={ROUTES.HOME} element={<Page><Dashboard /></Page>} />
       <Route path={ROUTES.JOBS} element={<Page><Jobs /></Page>} />
       <Route path={ROUTES.APPLICATIONS} element={<Page><Applications /></Page>} />
+      <Route path={ROUTES.AUTO_APPLY} element={<Page><AutoApply /></Page>} />
       <Route path={ROUTES.INTERVIEWS} element={<Page><Interviews /></Page>} />
       <Route path={ROUTES.RESUME} element={<Page><Resume /></Page>} />
       <Route path={ROUTES.SETTINGS} element={<Page><Settings /></Page>} />

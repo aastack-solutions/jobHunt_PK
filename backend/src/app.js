@@ -10,7 +10,7 @@ const { RedisStore } = require('connect-redis'); // named export in connect-redi
 
 const logger = require('./logger');
 const redisClient = require('./redis');
-const { apiLimiter } = require('./middleware/rateLimiter');
+const { apiLimiter, internalLimiter } = require('./middleware/rateLimiter');
 
 const healthRoute = require('./routes/health');
 const authRoute = require('./routes/auth');
@@ -22,6 +22,8 @@ const interviewsRoute = require('./routes/interviews');
 const aiRoute = require('./routes/ai');
 const dashboardRoute = require('./routes/dashboard');
 const internalRoute = require('./routes/internal');
+const applyCredentialsRoute = require('./routes/applyCredentials');
+const applyTasksRoute = require('./routes/applyTasks');
 
 // ---- Startup env validation: fail loudly on missing core vars ----
 function validateEnv() {
@@ -39,6 +41,7 @@ function validateEnv() {
     'GROQ_API_KEY', 'BREVO_SMTP_USER', 'BREVO_SMTP_KEY',
     'R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME',
     'INTERNAL_SECRET', 'CRON_SECRET', 'NOMINATIM_USER_AGENT',
+    'APPLY_BOT_SECRET', 'APPLY_BOT_MASTER_KEY', 'APPLY_BOT_ENABLED', 'APPLY_BOT_MODE', 'APPLY_BOT_DAILY_CAP',
   ];
   const missingOptional = optional.filter((key) => !process.env[key]);
   if (missingOptional.length > 0) {
@@ -88,7 +91,11 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 // authLimiter is applied per-route in routes/auth.js (login + register only) so
 // that frequently-called /api/auth/me and /logout are not rate-limited.
+// apiLimiter skips /api/internal/* (see rateLimiter.js) — that path gets its own,
+// more generous internalLimiter instead, so public traffic and trusted
+// service-to-service traffic never share one rate-limit bucket.
 app.use('/api', apiLimiter);
+app.use('/api/internal', internalLimiter);
 
 // ---- Routes ----
 app.use('/health', healthRoute);
@@ -101,6 +108,8 @@ app.use('/api/interviews', interviewsRoute);
 app.use('/api/ai', aiRoute);
 app.use('/api/dashboard', dashboardRoute);
 app.use('/api/internal', internalRoute);
+app.use('/api/apply-credentials', applyCredentialsRoute);
+app.use('/api/apply-tasks', applyTasksRoute);
 
 // ---- SPA fallback — Express 5 requires a NAMED wildcard ----
 function serveReact(req, res) {

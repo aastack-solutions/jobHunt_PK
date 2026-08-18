@@ -4,6 +4,7 @@
 const express = require('express');
 const prisma = require('../db');
 const requireAuth = require('../middleware/requireAuth');
+const { isGhosted } = require('../services/applicationHealth');
 
 const router = express.Router();
 
@@ -62,6 +63,8 @@ router.get('/', requireAuth, async (req, res) => {
       offerRate: pct(offers),
       remoteCount: remote.length,
       karachiCount: karachi.length,
+      autoAppliedCount: apps.filter((a) => a.source === 'auto_apply_bot').length,
+      ghostedCount: apps.filter((a) => isGhosted(a, now)).length,
     },
     funnel: {
       labels: FUNNEL_LABELS,
@@ -81,7 +84,23 @@ router.get('/', requireAuth, async (req, res) => {
             orderBy: { ranAt: 'desc' },
           })
         )?.ranAt || null,
+      // Only surfaced once it's actually run once — a team that hasn't enabled the
+      // auto-apply bot yet shouldn't see a false "hasn't run in 25 hours" alarm.
+      applyBotLastRunAt:
+        (
+          await prisma.schedulerLog.findFirst({
+            where: { jobName: 'apply-bot-select', status: 'completed' },
+            orderBy: { ranAt: 'desc' },
+          })
+        )?.ranAt || null,
     },
+    // 'unknown_outcome' (see applyBotSweep.js) means the apply-bot process crashed
+    // mid-task and the real outcome on the ATS site is unconfirmed — these need a
+    // human to check manually and can never resolve themselves, so surfacing the
+    // count is the whole point (silence here means something is quietly stuck).
+    applyBotNeedsReview: await prisma.applyTask.count({
+      where: { userId: req.session.userId, status: 'unknown_outcome' },
+    }),
   });
 });
 

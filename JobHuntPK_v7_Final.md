@@ -12,6 +12,17 @@ Prepared by: Engineering Team · Date: June 2026
 > not store them) — **`CLAUDE.md` is authoritative**; those divergences are intentional
 > corrections made after this spec was written.
 
+> **Auto-Apply Bot addendum (2026-08-13):** this document's Core Features and System
+> Architecture sections below describe the *original* committed build — they do not
+> mention an auto-apply bot, because this spec predates that feature. An auto-apply
+> bot (Playwright automation against Greenhouse/Lever/Ashby postings, running as a
+> separate `backend/apply-bot/` Railway service) was added afterward as an explicitly
+> authorized deviation from this spec's scope — see the approved plan for the full
+> design, and `backend/prisma/CLAUDE.md` for the resulting schema changes
+> (`ApplyCredential`, `ApplyTask`, `Application.applyUrl`). It also breaks this
+> document's "four Railway services, ~$3/month" cost claim in §System Architecture,
+> which should no longer be treated as accurate once that service is deployed.
+
 ---
 
 ## Overview

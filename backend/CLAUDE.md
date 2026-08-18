@@ -16,8 +16,14 @@ Rules for everything inside `backend/`. Read before touching any file here.
 "groq-sdk": "1.3.0",        "nodemailer": "9.0.1",
 "rss-parser": "3.13.0",     "cheerio": "1.2.0",
 "axios": "1.18.1",          "winston": "3.19.0",
-"dotenv": "17.4.2",         "@json2csv/plainjs": "7.0.6"
+"dotenv": "17.4.2",         "@json2csv/plainjs": "7.0.6",
+"ws": "8.18.0"
 ```
+
+`ws` (added 2026-08-17, F7 scaffold): WebSocket proxy for the apply-bot live-view
+feature (`routes/applyBotLive.js`) — the only place raw WebSockets are used in this
+codebase; everything else stays REST. Not yet installed/wired into `app.js`; see
+`docs/apply-bot/TECHNICAL_PLAN.md` F7.
 
 ## File Layout — Every File Has One Home
 

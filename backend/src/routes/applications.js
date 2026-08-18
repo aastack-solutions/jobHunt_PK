@@ -5,6 +5,7 @@ const { z } = require('zod');
 const { Parser } = require('@json2csv/plainjs');
 const prisma = require('../db');
 const requireAuth = require('../middleware/requireAuth');
+const { isGhosted } = require('../services/applicationHealth');
 
 const router = express.Router();
 
@@ -46,6 +47,10 @@ function publicApp(a) {
     locationType: a.locationType,
     status: a.status,
     notes: a.notes,
+    applyUrl: a.applyUrl,
+    source: a.source,
+    resumeId: a.resumeId,
+    isGhosted: isGhosted(a),
     appliedAt: a.appliedAt,
     updatedAt: a.updatedAt,
   };
@@ -70,7 +75,7 @@ router.get('/export', requireAuth, async (req, res) => {
     orderBy: { appliedAt: 'desc' },
   });
   const parser = new Parser({
-    fields: ['jobTitle', 'company', 'locationType', 'status', 'notes', 'appliedAt'],
+    fields: ['jobTitle', 'company', 'locationType', 'status', 'source', 'applyUrl', 'notes', 'appliedAt'],
   });
   const csv = parser.parse(apps.map(publicApp));
   res.header('Content-Type', 'text/csv');
@@ -83,6 +88,7 @@ router.post('/', requireAuth, async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
   const { jobId, notes } = parsed.data;
   let { jobTitle, company, locationType } = parsed.data;
+  let applyUrl = null;
 
   // When applying from a job, copy its snapshot fields onto the application.
   if (jobId) {
@@ -91,11 +97,19 @@ router.post('/', requireAuth, async (req, res) => {
     jobTitle = job.title;
     company = job.company;
     locationType = job.locationType;
+    applyUrl = job.applyUrl || null;
   }
 
   if (!jobTitle || !company || !locationType) {
     return res.status(400).json({ error: 'jobId, or jobTitle + company + locationType, is required' });
   }
+
+  // Same "whichever resume is active right now" convention the auto-apply bot uses
+  // (internal.js) — keeps resumeId meaningful across both creation paths.
+  const resume = await prisma.resume.findFirst({
+    where: { userId: req.session.userId, isActive: true },
+    orderBy: { uploadedAt: 'desc' },
+  });
 
   const app = await prisma.application.create({
     data: {
@@ -106,6 +120,9 @@ router.post('/', requireAuth, async (req, res) => {
       locationType,
       status: 'applied',
       notes: notes || null,
+      applyUrl,
+      source: 'manual',
+      resumeId: resume?.id || null,
     },
   });
   return res.status(201).json(publicApp(app));

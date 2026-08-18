@@ -2,17 +2,38 @@
 
 Rules for `schema.prisma` and all migrations. Read before touching the schema.
 
-## The Schema Is Fixed
+## The Schema Is Fixed — With One Explicitly Authorized Exception
 
 The 8-table schema is defined in `JobHuntPK_v7_Final.md` Section 8.
 Do not add, remove, or rename any field without explicit instruction.
 The first migration must include all 8 tables with all fields and all indexes.
 
-## 8 Tables
+**Exception, explicitly authorized**: the auto-apply bot feature (see the approved
+plan) added two tables — `ApplyCredential`, `ApplyTask` — and one field —
+`Application.applyUrl`. This is the "explicit instruction" this file's own rule
+requires before any schema change; any *further* change still needs the same.
+
+## 8 Original Tables
 
 `User` `Resume` `Job` `JobMatch` `Application` `Interview` `SchedulerLog`
 
 The 8th table is `FlaggedJob` — reserved for future use. Do NOT create it now.
+
+## Auto-Apply Bot Tables (added, not part of the original 8)
+
+`ApplyCredential` — per-user, per-platform login the user pre-created (Greenhouse/
+Lever/Ashby), encrypted at rest via `backend/src/services/cryptoService.js`
+(AES-256-GCM). Also holds the Playwright `storageState` captured after a successful
+login, reused on later tasks so the bot doesn't re-authenticate every run.
+
+`ApplyTask` — one row per attempted auto-application, the full audit trail. Created
+by `backend/jobs/applyBotSelect.js`, updated by the apply-bot service's callback to
+`POST /api/internal/apply-bot/tasks/:id/callback`.
+
+Neither table is reachable from the `apply-bot/` service directly — it has no
+`DATABASE_URL` and no Prisma client of its own; see `backend/apply-bot/` and the plan
+for why (crash isolation, smaller blast radius for the service that runs untrusted
+third-party pages).
 
 ## Critical Field Rules — Must Be Present in First Migration
 

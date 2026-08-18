@@ -37,10 +37,12 @@ model User {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
-  resumes      Resume[]
-  jobMatches   JobMatch[]
-  applications Application[]
-  interviews   Interview[]
+  resumes          Resume[]
+  jobMatches       JobMatch[]
+  applications     Application[]
+  interviews       Interview[]
+  applyCredentials ApplyCredential[]
+  applyTasks       ApplyTask[]
 }
 
 model Resume {
@@ -56,7 +58,8 @@ model Resume {
   isActive        Boolean  @default(true)
   uploadedAt      DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications Application[]
 
   @@index([userId])
   @@index([userId, isActive])
@@ -90,6 +93,7 @@ model Job {
 
   jobMatches   JobMatch[]
   applications Application[]
+  applyTasks   ApplyTask[]
 
   // Dedupe enforced as DB constraints (spec §Job Fetching): exact source match
   // and content fingerprint. createMany({ skipDuplicates }) relies on these.
@@ -131,17 +135,123 @@ model Application {
   locationType String   // denormalized from Job — never join to get this
   status       String   @default("applied")
   notes        String?
+  applyUrl     String?  // resolved third-party form URL actually submitted to (apply-bot); null for manual entries
+  source       String   @default("manual") // "manual" | "auto_apply_bot" — see docs/apply-bot/TECHNICAL_PLAN.md F13
+  resumeId     String?  // which resume version was active/used at the time of this application
   appliedAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job    Job?    @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  resume Resume? @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([resumeId])
+  @@index([userId, appliedAt])
+  @@index([userId, locationType])
+  @@index([jobId])
+}
+
+// Per-user, per-platform login the user pre-created (e.g. a Greenhouse/Lever account)
+// so the apply-bot can log in and reuse their profile. Encrypted at rest — see
+// backend/src/services/cryptoService.js for the AES-256-GCM scheme. username+password
+// are encrypted together as one JSON payload (one iv/authTag pair per credential row).
+model ApplyCredential {
+  id                  String   @id @default(cuid())
+  userId              String
+  platform            String   // "greenhouse" | "lever" | "ashby" | "generic"
+  loginUrl            String?  // for generic/custom logins
+  credentialEncrypted Bytes    // AES-256-GCM ciphertext of JSON.stringify({ username, password })
+  iv                  Bytes
+  authTag             Bytes
+  keyVersion          Int      @default(1)
+  isActive            Boolean  @default(true)
+
+  // Playwright storageState, saved after a successful login and reused on later
+  // tasks so the bot doesn't have to re-authenticate (and re-trigger login CAPTCHAs)
+  // on every run. Own iv/authTag pair — must NOT reuse the credential's above, GCM
+  // requires the tag that was produced alongside its own ciphertext.
+  sessionStateEncrypted Bytes?
+  sessionStateIv        Bytes?
+  sessionStateAuthTag   Bytes?
+  sessionStateSavedAt   DateTime?
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, platform])
+  @@index([userId])
+}
+
+// One row per attempted auto-application — the full audit trail for the apply-bot.
+// Created by the selection step (backend/jobs/applyBotSelect.js), updated by the
+// apply-bot worker's callback (POST /api/internal/apply-bot/callback).
+model ApplyTask {
+  id                String    @id @default(cuid())
+  userId            String
+  jobId             String?
+  applicationId     String?
+  applyUrl          String
+  adapterUsed       String    // "greenhouse" | "lever" | "ashby" | "generic"
+  mode              String    // "shadow" | "live"
+  status            String    @default("queued")
+  // queued | running | paused_captcha | shadow_complete | submitted | failed
+  // | skipped_low_confidence | skipped_duplicate | skipped_cap_reached | unknown_outcome
+  // unknown_outcome: set ONLY by applyBotSweep.js when a task is stuck 'running' too
+  // long (the apply-bot process likely crashed after possibly already submitting) —
+  // deliberately excluded from applyBotSelect.js's auto-retry to avoid a duplicate
+  // application; needs manual human resolution.
+  failureClass      String?   // CAPTCHA | AUTH | TIMEOUT | PORTAL_LAYOUT | NETWORK | LOW_CONFIDENCE | SSRF_BLOCKED | UNKNOWN
+  fieldsFilled      Json?     // field name -> value actually typed; password-like fields redacted
+  confidenceScore   Int?      // generic adapter only
+  failureReason     String?
+  screenshotKeys    String[]  @default([]) // R2 object keys, one per meaningful step
+  captchaDetectedAt DateTime?
+  captchaSolvedAt   DateTime?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   job  Job? @relation(fields: [jobId], references: [id], onDelete: SetNull)
 
   @@index([userId, status])
-  @@index([userId, appliedAt])
-  @@index([userId, locationType])
+  @@index([userId, createdAt])
   @@index([jobId])
+  @@index([status])
 }
+
+// F14 — Email-Based Application Status Auto-Detection. SCAFFOLDED, NOT ACTIVE.
+// Commented out on purpose: this is a schema addition and, per this file's own
+// rule ("explicit instruction" required — see backend/prisma/CLAUDE.md), it does
+// not get uncommented and migrated until the team has explicitly greenlit F14 for
+// real implementation, same bar as every other schema change in this project.
+// See docs/apply-bot/TECHNICAL_PLAN.md F14 for the full spec, and MEMORY.md's
+// 2026-08-17 entry for the CASA/Google-OAuth-scope-tier research this is built
+// around. When ready: uncomment, run `npx prisma migrate dev`, then wire up
+// backend/src/routes/emailIntegration.js and backend/jobs/emailStatusSync.js
+// (both already scaffolded with matching TODOs).
+//
+// model EmailIntegration {
+//   id                    String    @id @default(cuid())
+//   userId                String
+//   provider              String    // "gmail" | "outlook" (later)
+//   refreshTokenEncrypted Bytes     // same AES-256-GCM scheme as ApplyCredential — reuse cryptoService.js
+//   iv                    Bytes
+//   authTag               Bytes
+//   keyVersion            Int       @default(1)
+//   isActive              Boolean   @default(true)
+//   connectedAt           DateTime  @default(now())
+//   lastSyncAt            DateTime?
+//   updatedAt             DateTime  @updatedAt
+//
+//   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+//
+//   @@unique([userId, provider])
+//   @@index([userId])
+// }
 
 model Interview {
   id            String   @id @default(cuid())

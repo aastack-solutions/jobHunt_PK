@@ -7,6 +7,7 @@ const LINKS = [
   { to: ROUTES.HOME, label: 'Dashboard', end: true },
   { to: ROUTES.JOBS, label: 'Jobs' },
   { to: ROUTES.APPLICATIONS, label: 'Applications' },
+  { to: ROUTES.AUTO_APPLY, label: 'Auto-Apply' },
   { to: ROUTES.INTERVIEWS, label: 'Interviews' },
   { to: ROUTES.RESUME, label: 'Resume' },
   { to: ROUTES.SETTINGS, label: 'Settings' },

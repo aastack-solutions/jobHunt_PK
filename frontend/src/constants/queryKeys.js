@@ -7,4 +7,6 @@ export const QUERY_KEYS = {
   RESUMES: ['resumes'],
   DASHBOARD: ['dashboard'],
   SCHEDULER_LOG: ['scheduler-log'],
+  APPLY_TASKS: ['apply-tasks'],
+  APPLY_CREDENTIALS: ['apply-credentials'],
 };

@@ -469,16 +469,33 @@ running locally (branch `f9-failure-measurement`).
 
 ## F11 — Credential & Session Management UX
 
-- [ ] 🖐️ A user can add a Greenhouse credential through the Settings UI with no API
-      client/Postman needed
-- [ ] 🖐️ The credential list never displays the secret after creation, only
-      platform/status/`hasSessionState`
-- [ ] 🖐️ Deleting a credential means subsequent selection correctly skips that
-      platform (no credential → skip, per `applyBotSelect.js`)
-- [ ] 🖐️ `ApplyBotLiveView.jsx` renders frames correctly against a stubbed WS server
-      matching Contract B — buildable and testable independent of F7's real backend
-- [ ] 🖐️ Mouse/keyboard capture in the live-view component correctly normalizes
-      coordinates to the documented 0..1 range before sending
+All verified 2026-08-19. Items 1-3 were driven through the real UI in a real
+Chromium against the built frontend served by the backend — 9/9 checks passed.
+
+- [x] 🖐️ A user can add a Greenhouse credential through the Settings UI with no API
+      client/Postman needed — done end to end in a browser: open Settings, press
+      Add, fill username/password, save, and the row flips to a **Saved** badge
+- [x] 🖐️ The credential list never displays the secret after creation, only
+      platform/status/`hasSessionState` — asserted three ways after a reload: the
+      password string appears nowhere in the rendered text, nowhere in the DOM, and
+      nowhere in the `/api/apply-credentials` response, while the platform is still
+      correctly listed as configured
+- [x] 🖐️ Deleting a credential means subsequent selection correctly skips that
+      platform (no credential → skip, per `applyBotSelect.js`) — the delete half was
+      done through the UI (with a confirmation step, since it silently stops the bot
+      applying to that platform); the skip half is covered by F10's
+      `applyBotSelect.test.js` ("a platform needing a credential is skipped when
+      none is stored" and the inactive-credential case)
+- [x] 🤖 `ApplyBotLiveView.jsx` renders frames correctly against a stubbed WS server
+      matching Contract B — the protocol half is now a pure module,
+      `frontend/src/lib/liveViewProtocol.js`, with 16 tests in
+      `frontend/test/liveViewProtocol.test.js` covering every server-to-client shape
+      including a frame whose image is not a `data:` image URL, which is refused
+      before it can reach an `<img>` src
+- [x] 🤖 Mouse/keyboard capture in the live-view component correctly normalizes
+      coordinates to the documented 0..1 range before sending — corners, centre,
+      clamping for a pointer that left the canvas mid-drag, and a not-yet-laid-out
+      canvas reporting zero width are all asserted
 
 ## F12 — Live-Mode Rollout & Safety Ops
 

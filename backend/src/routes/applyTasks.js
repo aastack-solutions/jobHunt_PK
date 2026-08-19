@@ -18,6 +18,11 @@ function publicTask(t) {
     adapterUsed: t.adapterUsed,
     mode: t.mode,
     status: t.status,
+    // F7 added this column; nothing exposed it until F11 needed it. It is what
+    // tells the live-view which instructions to show (solve a CAPTCHA vs. fetch a
+    // code from your inbox), so without it the UI can only ever say "something
+    // needs attention".
+    pauseReason: t.pauseReason,
     failureClass: t.failureClass,
     failureReason: t.failureReason,
     confidenceScore: t.confidenceScore,

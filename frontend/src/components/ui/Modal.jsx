@@ -1,7 +1,12 @@
 import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 
-export default function Modal({ isOpen, onClose, title, children }) {
+// `size` added 2026-08-19 (F11): the live-view renders a full browser screenshot,
+// which is unreadable at the default dialog width. Default is unchanged, so every
+// existing caller keeps the width it had.
+const SIZES = { md: 'max-w-lg', lg: 'max-w-3xl', xl: 'max-w-5xl' };
+
+export default function Modal({ isOpen, onClose, title, size = 'md', children }) {
   const panelRef = useRef(null);
 
   useEffect(() => {
@@ -31,7 +36,7 @@ export default function Modal({ isOpen, onClose, title, children }) {
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="glass-strong w-full max-w-lg rounded-3xl outline-none animate-slide-up"
+        className={`glass-strong w-full ${SIZES[size] || SIZES.md} rounded-3xl outline-none animate-slide-up`}
       >
         <div className="flex items-center justify-between border-b border-white/40 px-6 py-4">
           <h2 className="text-lg font-bold text-slate-800">{title}</h2>

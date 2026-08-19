@@ -40,11 +40,11 @@ touching what.
 | F5 | Greenhouse adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings on the new job-boards.greenhouse.io domain — selectors correct as-is (no code bug found), CAPTCHA confirmed present on all 5 (1 only post-fill, confirming the dual pre/post check matters), hydration-timing question resolved (no wait needed) |
 | F6 | Ashby adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — 2 real bugs found & fixed (a genuine field-scan hydration-timing race, unlike F5's Greenhouse where none was needed; and a click-through-to-/application form flow); CAPTCHA not observed on any of the 5 (unlike F4/F5's 100%) |
 | F7 | CAPTCHA / bot-challenge live-view | ✅ Done, verified (2 items narrower-scope) | Claude (session) | Verified 2026-08-19 against a real hCaptcha — full pause→live-view→resume cycle confirmed live, critical TASK_DEADLINE_MS pause-aware regression confirmed with real evidence, 1 real bug fixed (WS auth accepted-then-closed instead of never-accepted). Mouse/keyboard round-trip and email-verification not exercised against real occurrences — see TEST_PLAN.md |
-| F8 | Generic engine (non-ATS sources) | 🔴 Not started, gated off | Unassigned | `APPLY_BOT_GENERIC_ENABLED=false` — don't enable until built |
-| F9 | Failure measurement & alerting | 🟡 Partially built | Unassigned | Staleness/needs-review dashboard alerting done 2026-08-17; per-adapter success-rate reporting still open |
-| F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 43 automated tests passing, 3 skipped (Playwright-only) as of 2026-08-19 — DB-dependent sweep/callback tests un-skipped and made real during F2 verification; remaining items need a real Playwright install |
+| F8 | Generic engine (non-ATS sources) | ✅ Done, verified | Claude (session) | F8a + F8b built and verified against real postings; `genericAdapter.js` implemented. F8c researched and deliberately closed — 3/16 aggregator postings reachable, and 2 of those 3 land on adapters we already have. `APPLY_BOT_GENERIC_ENABLED` stays false as a *conclusion*, not a gap |
+| F9 | Failure measurement & alerting | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon — all 4 test-plan items pass. Remaining half built (`jobs/applyBotFailureReport.js`); 1 real design bug found & fixed during verification (report skipped entirely when the kill switch was off). Item 2 verified at logic level only — frontend has no test tooling |
+| F10 | Testing & verification harness | ✅ Done, verified | Claude (session) | 78 passing / 0 skipped / 0 failing in 48s (43 total at start of 2026-08-19). Last blockers cleared: Playwright installed, callback test now starts its own server, and `applyBotSelect.js` went 16.98% -> 69.75% line / 100% branch. `npm run test:coverage` added |
 | F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
-| F12 | Live-mode rollout & safety ops | 🔴 Blocked on F5/F6/F9/F10 | Unassigned | Now also requires: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17) |
+| F12 | Live-mode rollout & safety ops | 🟡 Unblocked, not started | Unassigned | F5/F6/F8/F9/F10 all done now — no build blockers left. What remains is F12 own checklist: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17), kill-switch drill, and the first real live-mode application |
 | F13 | Unified application tracking (source, resume link, ghosted) | ✅ Built, ⚠️ untested | — | Closes the pre-existing "Apply button doesn't track" gap too — see Decisions Log 2026-08-17 |
 | F14 | Email-based application status auto-detection | 🔵 Researched + specified, not built | Unassigned | User opted in to scoping this — needs a real Google Cloud OAuth app before any code can be tested |
 
@@ -53,6 +53,290 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F10 completed: the suite now runs itself, and the riskiest file in the feature finally has tests
+Branch: `f10-testing-harness` (off `f8-generic-engine`, since F8/F9 are not merged to
+`master` yet and this touches the same test tree).
+
+**The finding that shaped the work: a test nobody was running.**
+`applyTaskCallback.test.js` required somebody to have started a backend by hand
+(`npm run dev`) in another terminal before `npm test`. In practice that almost never
+happened, so the one test guarding callback idempotency — the guard against a
+duplicate `submitted` callback creating a second `Application` row — quietly skipped
+on essentially every run while still *looking* present in the suite. It now mounts the
+`internal.js` router on a throwaway server on an ephemeral port, so a live
+`DATABASE_URL` is the only external thing it needs. `TEST_BASE_URL` still points it at
+a real backend for anyone wanting the full middleware stack. Deliberately does **not**
+require `src/app.js`: that binds port 5000 and starts the scheduler and AI workers as
+an import side effect.
+
+**The second finding came from actually measuring.** `npm run test:coverage`
+(`--experimental-test-coverage`, no new dependency) put `applyBotSelect.js` at
+**16.98%** line coverage — the file holding the daily cap, both dedupe rules, the
+credential requirement and the F8 generic gate. Every rule that stops the bot doing
+something it should not, with no automated test at all, on the file F12's live-mode
+rollout depends on most. Now **69.75% line / 100% branch** via 11 tests covering the
+cap, the already-capped case, in-flight dedupe, `unknown_outcome` blocking a job
+indefinitely, company dedupe case-insensitively, missing and inactive credentials, the
+F8 gate in both positions, the F8a rewrite, non-https refusal and inactive jobs.
+
+`selectForUser` was exported to make that possible — `runApplyBotSelection()` loops
+over every user in the database, which no test may do against a shared one. Marked in
+the source as exported for tests only.
+
+**Honest reading of the whole-backend number.** Overall line coverage is 59.20%
+(branch 82.49%), which is under the 80% line target. That is not the apply-bot feature:
+its files sit at 65-98%. The number is dragged down by pre-existing code outside this
+feature that has never had tests — `jobFetcher.js` 27%, `matchingEngine.js` 36%,
+`storageService.js` 42%, `dailyJobFetch.js` 17%. Raising those is real work and worth
+doing, but it is not F10, and padding this feature's tests would not move it.
+
+**Also closed:** the "blocked on a real Playwright install" item. Chromium is installed,
+so `fieldTaxonomy.bestMatch` against a fixture DOM and `looksLikeLoginPage` against
+fixture pages both run for real. The suite now has **zero skips** with a database
+present.
+
+**One self-inflicted failure worth recording**, since it is exactly the class of thing
+this ticket exists to catch: the first draft of the new tests invented
+`ApplyCredential` field names (`passwordCiphertext`/`passwordIv`/`passwordAuthTag`)
+instead of reading the schema, and 9 tests failed at once on a single root cause. The
+real fields are `credentialEncrypted`/`iv`/`authTag`, all `Bytes`. They are seeded with
+dummy bytes on purpose — `selectForUser` only checks that an active row exists and
+never decrypts, so encrypting for real would make these tests depend on
+`APPLY_BOT_MASTER_KEY` and fail for a reason unrelated to what they assert.
+
+**Verification.** With `DATABASE_URL`: 78 passing, 0 skipped, 0 failing, 48s — inside
+the "under a minute" definition of done. Without it: 57 passing, 8 skipped, 0 failing,
+5s, so a plain CI checkout is unaffected. Test rows are seeded per-test under their own
+throwaway user and deleted in a `finally`; enqueued BullMQ jobs are removed
+individually by `applyTaskId` rather than by draining the shared queue.
+
+### 2026-08-19 — F8 completed: 611 misrouted jobs recovered, generic adapter implemented, F8c researched and closed
+Branch: `f8-generic-engine`. Follows the same day's scoping-pass entry below, which
+is where the evidence behind all of this lives.
+
+**F8a shipped, with the behaviour change signed off first.** `resolvePlatform()` now
+treats a `gh_jid=` query parameter as Greenhouse regardless of hostname, and
+`resolveNavigationUrl()` rewrites those postings to the embed form. Live measurement
+after the change: jobs resolving to `greenhouse` went **486 -> 1097**, `generic` fell
+**1088 -> 477** — the 611 predicted by the research, exactly.
+
+The signed-off consequence, restated because it is the part that affects users: those
+611 jobs now sit on a platform where `requiresCredential()` is true, so a user with no
+stored Greenhouse credential sees them as *skipped* rather than *attempted*. That is
+recorded as an assertion in `applyBotPlatform.test.js`, not just as a comment.
+
+**Two details in that implementation that are easy to get wrong later:**
+- It rewrites to the **legacy** `boards.greenhouse.io` host, which accepts `token`
+  alone and lets Greenhouse fill in the employer's board slug itself on redirect.
+  The modern `job-boards.greenhouse.io` host requires `for=<slug>` and served no form
+  without it on all 7 postings probed. Do not "modernise" that constant.
+- `gh_jid` is accepted only if it is **digits**. It arrives from third-party job
+  feeds and is interpolated into a URL the bot then navigates to.
+
+**Application.applyUrl now diverges from ApplyTask.applyUrl, deliberately.**
+`routes/internal.js` writes the *employer's* posting URL to the Application, while the
+task keeps the embed URL it actually navigated. Handing someone a bare embed form as
+the record of where they applied would be a downgrade.
+
+**genericAdapter.js implemented** (its TODOs filled in, file shape untouched). Follows
+`ashbyAdapter`'s scan -> `bestMatch` -> `nth(index)` pattern rather than inventing a
+second one. Notable choices: it tries a single `full_name` field first and only falls
+back to the `first_name`/`last_name` pair (filling both shapes would put a full name
+into a "First name" box); a split name only counts if the *first* name landed; it
+reports confidence **70** when everything required is present — above `worker.js`'s
+threshold of 60, below the 80 the selector-verified ATS adapters claim, because it
+inferred every field from labels it has never seen. `locateSubmit`'s patterns are
+**anchored**: an unanchored `/submit|apply/` matches "Apply to other jobs", and on a
+form of unknown structure a wrong click is worse than finding no button at all.
+
+**F8c researched and closed without building.** 16 real aggregator postings, 2 per
+host across all 8 hosts. Only 3 of 16 (19%) reached a fillable form by following the
+apply link — and 2 of those 3 landed on Greenhouse and Ashby, platforms we already
+have verified adapters for. The blockers on the rest are structural, not heuristic:
+weworkremotely.com puts the apply behind *"Create an account to view full job"*;
+remoteok.com's "Apply" is a `/l/<id>` gateway that bounced back to the same page;
+himalayas.app, mustakbil.com and remotive.com expose **zero** apply anchors at all.
+Recorded honestly: the probe's own link-picking misfired on arbeitnow.com, following
+a blog post called "Applying for German Citizenship", so the real ceiling is somewhat
+above 19% — just nowhere near enough to justify the build. If it is ever revived, the
+order the evidence supports is a JazzHR adapter first, then a link-follower whose only
+job is re-resolving into an existing adapter, and generic filling last.
+
+**Verification.** Live against real Neon with the backend running: a full selection
+run created **70 tasks, all greenhouse, zero generic** (the gate regression, with 477
+generic-platform jobs sitting eligible), and **17 of those 70** stored a rewritten
+embed URL while their Application link still pointed at the employer's posting. Seven
+freshly-sampled employer-hosted postings across seven different employers — none
+previously probed — all served a real application form at the rewritten URL. All four
+of TEST_PLAN's original F8 items are now checked, plus two added for F8a. Suite: **64
+passing, 1 skipped (needs a running server), 0 failing** — up from 43 total at the
+start of the day.
+
+One test failure during this work was **my own test's bug**, not the code's:
+`isSafeUrl` returns a plain boolean and the first draft asserted on a `{safe}`
+object. Worth noting only because the SSRF assertion would have silently passed
+against `undefined` had it been written the other way round.
+
+**Cleanup**: every task created during verification (15 + 70) was deleted and the
+queue drained; the database is back to its pre-session state (10 `ApplyTask` rows,
+1 user). The raised `APPLY_BOT_DAILY_CAP=80` was passed per-process for one run only
+and never written to `.env`.
+
+### 2026-08-19 — F8 scoping pass done with a real 20-URL corpus; the evidence reframes the feature, and one real engine bug was found and fixed (F8b)
+Branch: `f8-generic-engine` (branched from `f9-failure-measurement`, since F9 is not
+merged to `master` yet and both touch `applyBotSelect.js` — branching off master
+would have set up a conflict for no benefit).
+
+**Why a scoping pass and not code.** `TECHNICAL_PLAN.md`'s F8 section said its
+definition of done was undefined pending exactly this research, and
+`01-research-plan.md` §E demanded a real corpus *before* touching `SYNONYMS`. So the
+corpus was built first: 20 real `applyUrl`s sampled to span all 16 hosts that
+`resolvePlatform()` calls `generic`, visited with real headless Chromium, scanned
+with the **real** `scanFields`/`bestMatch` (not a reimplementation). Read-only —
+nothing typed, uploaded or submitted anywhere.
+
+**The headline: only 1 of 20 (5%) landed on a directly fillable form.** 9 were
+listing/redirect pages, 6 were a known ATS behind a company domain, 4 were listing
+pages whose field count was inflated by search/newsletter boxes. Full findings are
+written into `01-research-plan.md` §E; the F8 section of `TECHNICAL_PLAN.md` has been
+rewritten with an evidence-based DoD that splits F8 into F8a/F8b/F8c.
+
+**The finding that reframes the feature: 56% of "generic" is Greenhouse.** Measured
+across the whole database, **611 of 1088** URLs that resolve to `generic` carry a
+`gh_jid=` parameter — Greenhouse's own job id. `resolvePlatform()` only inspects
+`hostname`, so Greenhouse boards served on samsara.com, coinbase.com, stripe.com,
+instacart.careers, databricks.com, careers.airbnb.com, jobs.dropbox.com and asana.com
+are invisible to it. That is 21.8% of all active jobs pointed at a generic engine that
+does not exist instead of at the already-verified F5 adapter.
+
+**A negative result worth as much as the positive one.** The obvious fix — rewrite to
+`job-boards.greenhouse.io/<company>/jobs/<gh_jid>` — was probed on 6 of them and **all
+6 redirected straight back** to the company's own careers page. Greenhouse bounces the
+canonical board URL for embedded-board customers. What works is the embed URL
+(`/embed/job_app?for=<company>&token=<gh_jid>`): probed on 4, all 4 served a real
+application form. Anyone implementing F8a must use the embed URL — the canonical one
+looks right and silently does nothing.
+
+**Real bug found and fixed (F8b).** On 4 of 4 live Greenhouse embed forms the resume
+file input is labelled **"Attach"** and carries `id="resume"`. `'attach resume'` is not
+a substring of `'attach'`, so no label matched; the id/name path scored it at
+`NAME_ATTR` (35), under `MIN_CONFIDENCE_TO_FILL` (60) — so the strictest gate in the
+engine (per §04) failed on a completely unambiguous signal, and every one of these
+forms would have abstained over one word. Fixed by adding
+`NAME_ATTR_TYPE_CONFIRMED` (75): when `bestMatch` has *already* restricted candidates
+by element type (`resume_upload` -> `type="file"`), an id/name hit is corroborated
+rather than speculative, and deserves to clear the bar. Deliberately **not** fixed by
+adding an `'attach'` label synonym — these forms carry two file inputs, `id="resume"`
+and `id="cover_letter"`, both labelled "Attach", so a label synonym would have picked
+the wrong one about as often as the right one. Also hardened the id/name path to
+word-boundary matching while in there, so the two-letter `'cv'` synonym cannot hit an
+unrelated id like `cvv_scan` — that path was previously dead code for fill decisions
+(35 always lost to the 60 threshold), so this is the first time it can actually
+decide anything and the looseness started to matter.
+
+**Not affected: the shipping Greenhouse adapter.** It reaches the resume input via a
+hardcoded `#resume` selector and never consults the taxonomy for that field, so this
+bug was confined to F8's generic path. Verified as a side effect that `#resume` does
+match on the embed forms (1 element) — which is what makes F8a viable at all. Its
+companion selector `input[type="file"][name*="resume" i]` matches **0** there, since
+those inputs have an empty `name`; worth knowing before anyone "tidies up" that pair.
+
+**Also contradicted: §04's assumption about which lever matters.** §04 says the first
+tuning lever is the synonym list. On the one genuinely fillable form in the corpus (a
+JazzHR board at `applytojob.com`, reached only by following workingnomads.com through
+a redirect) the existing synonyms matched every required field at confidence 80 with
+no gaps at all. The corpus says the real first lever is *reaching a form*, not naming
+its fields.
+
+**Verification.** 5 new browser-free regression tests in
+`backend/apply-bot/test/fieldTaxonomy.test.js` (kept in the existing file — no new
+file, so the locked manifest is untouched). Against live pages: the 4 Greenhouse embed
+forms flipped from "required field missing" to fully matched, and re-scanning the
+original 20-URL corpus produced an **identical** verdict tally, confirming no new
+false positives on the 9 listing pages. Suites: apply-bot 30/30 passing with 0 skipped
+(Playwright is installed now, so F10's two browser-dependent stubs finally run);
+backend 52 passing, 1 skipped (needs a running server), 0 failing.
+
+**Open, needs a call before more F8 code:** F8a changes routing for 611 real jobs
+onto a platform where `requiresCredential()` is true — a user without a stored
+Greenhouse credential goes from "generic, attempted" to "skipped". That is a
+behaviour change, not a refactor, so it is not something to just do.
+
+### 2026-08-19 — F9's remaining half built and verified against real Neon; 1 real design bug found and fixed during verification
+Branch: `f9-failure-measurement` (branched from `master` after F7 merged in).
+
+**Why F9 and not F8, even though F8 is the next number.** F8 was the obvious next
+ticket by sequence, but `TECHNICAL_PLAN.md`'s own F8 section says
+*"Definition of done: not defined yet — this feature needs its own scoping pass"*,
+and `01-research-plan.md` §E requires a corpus of 15-20 real non-ATS apply forms
+built **before** any synonym tuning. Building it now would have meant inventing a
+definition of done, which `CLAUDE.md` explicitly forbids. F9 was chosen instead: its
+DoD is crisp, it's Wave 1 (zero file conflicts), and F12 is blocked on it. **F8 still
+needs its scoping pass — that's the real next decision, not a coding task.**
+
+**What was built.** `jobs/applyBotFailureReport.js` (the file the plan had already
+named and scaffolded — filled in, not restructured). Two `groupBy` queries produce
+§03's overall success rate, abstain rate, failure-class breakdown, and per-adapter
+success rate over a rolling window. Runs automatically after each `applyBotSelect.js`
+run, on demand as a CLI, and persists each run as an `apply-bot-failure-report`
+`SchedulerLog` row (full JSON in the existing `sourceBreakdown` column — no schema
+change, no migration).
+
+**The real bug, found by verifying rather than by reading.** The first version put
+the report call at the *end* of `runApplyBotSelection()`, after the kill-switch
+early-return. Triggering the endpoint with the switch off proved it: the report
+never ran. That's backwards — the sweep above it is deliberately unconditional
+because *"cleaning up stale tasks from BEFORE the feature was disabled is still
+correct"*, and the identical argument applies to reporting: a team that just turned
+the bot off after a bad week is exactly the team that needs the numbers explaining
+why. Moved above the kill-switch check; both paths now return a report.
+
+**A second thing verification caught, worth writing down.** Triggering
+`/api/internal/apply-bot/trigger-select` created 15 real `ApplyTask` rows — because
+Redis's `apply_bot:enabled` key was `"true"` from an earlier session and **overrides**
+`APPLY_BOT_ENABLED="false"` in `.env` (by design, see `applyBotSelect.js`). The env
+var is only a boot-time default. Anyone triggering selection during local testing
+should check the Redis key first, not the `.env` file. The 15 rows were deleted, the
+queue drained, and the key restored to `"true"` (its original value) afterwards.
+
+**Design calls made, both defensible either way — recorded so they aren't silently
+re-litigated:**
+- A rate with a zero denominator returns `null`, never `0`. A brand-new adapter with
+  no resolved tasks would otherwise read as a 0%-success (i.e. broken) adapter.
+- §03's ">50% per-adapter failure rate" alert is a `logger.warn` with a
+  20-resolved-task minimum, **not** a dashboard banner — §03 itself says not to build
+  alert UI before there's real volume to calibrate against.
+- The report is global (no `userId` filter): "what's *our* Greenhouse success rate"
+  is a team question. Note this differs from the dashboard's `applyBotNeedsReview`,
+  which is deliberately per-user. Both are correct for their own purpose.
+- §03's §3 CAPTCHA-hit rate, §6 confidence histogram and §7 cap check were left out
+  as out-of-scope for F9's stated remaining half. §3 is the likeliest next addition —
+  it's the before/after metric for F7's live-view work.
+
+**Verification (all 4 TEST_PLAN F9 items, against real Neon + a locally-running
+backend).** Items 1 and 3 end-to-end through `GET /api/dashboard`: a freshly
+registered user read `0` while the database globally held 3 `unknown_outcome` rows
+owned by someone else (proving the count is correctly per-user), then `0 → 2 → 1 → 0`
+as seeded rows were resolved one at a time. Item 4 is now automated —
+`backend/test/applyBotFailureReport.test.js`, 5 tests, isolated by seeding under a
+unique per-test `adapterUsed` name so the global report's numbers stay exactly
+assertable without adding a test-only filter to production code. Item 2 was verified
+at logic level only: the real `applyBotOverdue` expression was extracted from
+`SchedulerAlert.jsx` and evaluated (`null` → no banner, live 4h-old value → no
+banner, 26h-old → banner). **Honest limit**: that is not a rendered-component test —
+the frontend has no test tooling at all (no vitest/RTL), and the never-run `null`
+case couldn't be produced end-to-end without deleting this database's real
+`apply-bot-select` history.
+
+Also: the DoD was demonstrated literally — `node -r dotenv/config
+jobs/applyBotFailureReport.js 7` answered "what's our Greenhouse success rate this
+week" (`greenhouse 22.2% (2/9)`, `lever 0% (0/3)`, `TIMEOUT: 3, CAPTCHA: 3`) with no
+hand-written query. Full suite after the change: **47 passing, 3 skipped
+(Playwright-only), 0 failing.** The verification user and all rows it created were
+deleted; the database is back to its pre-session state (1 user, 10 `ApplyTask` rows).
+The `apply-bot-failure-report` `SchedulerLog` rows written during verification were
+left in place — they're accurate records of runs that really happened.
 
 ### 2026-08-19 — F7 built and verified against a real hCaptcha; critical pause-aware-deadline requirement confirmed with real evidence; 1 real security bug fixed
 Branch: `f7-captcha-live-view` (branched from `master` after merging F6 in).
@@ -815,6 +1099,13 @@ first time someone actually fills in a TODO.
 
 ## Open Questions
 
+- **What F8's definition of done actually is.** `TECHNICAL_PLAN.md` leaves it
+  undefined on purpose, pending a scoping pass "once F4-F7 are done and real data
+  exists on how often non-ATS `applyUrl`s actually resolve to something fillable at
+  all." F4-F7 are now done, so this pass is due — and it is a research/scoping
+  decision, not a coding task: `01-research-plan.md` §E wants a corpus of 15-20 real
+  non-ATS apply forms collected *before* any synonym tuning. Flagged 2026-08-19 when
+  F9 was picked over F8 for exactly this reason. **Unresolved.**
 - Whether to add `phone`/`linkedinUrl`/`portfolioUrl` fields to `User` (schema
   change, needs explicit sign-off) vs. accepting that ATS forms requiring phone will
   always abstain. See `docs/apply-bot/01-research-plan.md` §D. **Unresolved.**

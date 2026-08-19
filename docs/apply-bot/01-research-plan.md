@@ -92,6 +92,77 @@ field label seen. Diff against `SYNONYMS` in `fieldTaxonomy.js`. This is the con
 input for §04's synonym-expansion work — don't skip straight to tuning without
 first collecting real examples.
 
+### ✅ DONE 2026-08-19 — findings
+
+Corpus built by visiting 20 real `applyUrl`s with a real headless Chromium, sampled
+to span all 16 hosts that `resolvePlatform()` currently calls `generic`, and scanned
+with the **real** `scanFields`/`bestMatch` from `fieldTaxonomy.js` (not a
+reimplementation), so what follows is what the generic adapter would actually see.
+Read-only — nothing was typed, uploaded, or submitted.
+
+**Headline: only 1 of 20 (5%) landed on a directly fillable form.** The earlier
+audit's suspicion was right, and then some:
+
+| Verdict | Count | What it means |
+|---|---|---|
+| `LISTING_OR_REDIRECT_PAGE` | 9 | No form at all — a job description with an "Apply" link |
+| `ATS_BEHIND_CUSTOM_DOMAIN` | 6 | A known ATS is behind the company's own domain |
+| `OTHER` | 4 | Mostly listing pages with a search/newsletter box inflating the field count |
+| `FILLABLE_FORM` | 1 | workingnomads.com, and only after a redirect to a *different* ATS |
+
+**Finding 1 — 56% of "generic" isn't generic at all; it's Greenhouse.** Measured
+across the whole database, not the sample: **611 of 1088** URLs that
+`resolvePlatform()` returns `generic` for carry a `gh_jid=` query parameter, which is
+Greenhouse's own job id. `resolvePlatform()` only looks at `hostname`, so a Greenhouse
+board served on `samsara.com` / `coinbase.com` / `stripe.com` / `instacart.careers` /
+`databricks.com` / `careers.airbnb.com` / `jobs.dropbox.com` / `asana.com` is invisible
+to it. That is 611 jobs (21.8% of all active jobs) currently routed to a generic
+engine that does not exist, instead of to the already-verified Greenhouse adapter.
+
+**Finding 2 — the canonical Greenhouse URL does NOT work for these; the embed URL
+does.** Rewriting to `job-boards.greenhouse.io/<company>/jobs/<gh_jid>` was probed on
+6 of them and **all 6 redirected straight back** to the company's own careers page —
+Greenhouse bounces the canonical board URL for embedded-board customers. What works
+is the embed form URL the pages themselves link to:
+`https://job-boards.greenhouse.io/embed/job_app?for=<company>&token=<gh_jid>`.
+Probed on 4 (coinbase, samsara, stripe, instacart): **all 4 served a real application
+form** with 2 file inputs and 30-52 typeable fields — including samsara and stripe,
+whose own pages exposed no Greenhouse iframe or link at all. Any
+resolve-the-real-destination step must use the embed URL, not the canonical one.
+
+**Finding 3 — the verified Greenhouse adapter would work on those embed forms.**
+Its hardcoded `#resume` selector matches 1 element on both embed pages probed. (Its
+second selector, `input[type="file"][name*="resume" i]`, matches 0 — these inputs
+carry `id="resume"` with an empty `name` — so the `#resume` half is doing all the
+work. Worth knowing before anyone "simplifies" that selector pair.)
+
+**Finding 4 — a real generic-engine bug: `resume_upload` fails on 4 of 4 real
+Greenhouse forms.** The file input is labelled **"Attach"**, and
+`SYNONYMS.resume_upload` is `['resume','résumé','cv','upload resume','attach resume']`
+— `'attach resume'` is not a substring of `'attach'`, so no label match. It does have
+`id="resume"`, but `scoreFieldForKey()` scores an id/name hit at `NAME_ATTR` (35),
+below `MIN_CONFIDENCE_TO_FILL` (60), so it is discarded. Per §04 the resume upload is
+"the strictest single gate" — so **every one of these forms abstains on the generic
+path purely over the word "Attach"**, despite the id being an unambiguous signal.
+Note this is the *generic* path only: the Greenhouse adapter never consults the
+taxonomy for the resume field (Finding 3), so no currently-shipping adapter is
+affected.
+
+**Finding 5 — SYNONYMS is not the bottleneck, contrary to §04's expectation.** On the
+one genuinely fillable form found (a JazzHR board at `applytojob.com`), the existing
+synonyms matched every required field at confidence 80 with **no gaps** — first/last
+name, email, phone, resume, cover letter, even salary expectation. §04 says the first
+tuning lever is the synonym list; this corpus says the first lever is actually
+*reaching a form at all*.
+
+**Finding 6 — the true unknown remainder is 477 URLs across exactly 8 aggregator
+hosts**: remoteok.com (100), weworkremotely.com (100), arbeitnow.com (97),
+arbeitnow.co.uk (75), workingnomads.com (48), himalayas.app (20), mustakbil.com (20),
+remotive.com (17). Every one sampled was a listing/redirect page, and the single
+success among them (workingnomads) only worked by following through to a third-party
+ATS. So the residual is not "unknown custom forms needing better synonyms" — it is
+"aggregator pages needing a follow-the-apply-link step."
+
 ## F. Confirm session-state (storageState) reuse actually works
 
 **Why it matters**: the whole point of saving `ApplyCredential.sessionStateEncrypted`

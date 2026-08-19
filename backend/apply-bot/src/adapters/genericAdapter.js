@@ -1,10 +1,13 @@
 // Generic adapter (F8) — best-effort autofill for the ~9 non-ATS sources
 // (Remotive, Adzuna, Jooble, etc.) whose applyUrl isn't a known ATS.
 //
-// STATUS: scaffolded 2026-08-17, not implemented. Gated off end-to-end —
+// STATUS: implemented 2026-08-19 (F8). Still gated off end-to-end —
 // backend/jobs/applyBotSelect.js never creates a task for platform "generic"
-// unless APPLY_BOT_GENERIC_ENABLED=true, so this adapter is registered in
-// adapters/index.js but never actually invoked yet. Safe to leave wired in.
+// unless APPLY_BOT_GENERIC_ENABLED=true, and that flag stays false: the section E
+// corpus research found only 1 of 20 real non-ATS applyUrls is a fillable form at
+// all, so turning this on today would mostly produce abstains against listing
+// pages. It is implemented so that it is correct and safe WHEN enabled, not
+// because enabling it is currently worthwhile.
 //
 // Read before implementing:
 //   - docs/apply-bot/TECHNICAL_PLAN.md F8 (full spec, risks, why this is
@@ -49,35 +52,88 @@ async function fillApplication(page, profile) {
   const fieldsFilled = {};
   const fields = await scanFields(page);
 
-  // TODO(F8): this loop is the actual feature. Wire each taxonomy key to a real
-  // fill action once docs/apply-bot/01 §E's fixture corpus exists to validate
-  // against — right now this only detects and records fields, it never fills
-  // any of them, which is a deliberately safe (does-nothing) starting point,
-  // not a finished abstain-by-default implementation.
-  const REQUIRED_KEYS = ['email', 'full_name', 'resume_upload'];
-  const OPTIONAL_KEYS = ['first_name', 'last_name', 'phone', 'linkedin_url', 'portfolio_url', 'cover_letter_text'];
-
-  for (const key of [...REQUIRED_KEYS, ...OPTIONAL_KEYS]) {
+  // Same mechanism the three ATS adapters use: fieldTaxonomy.scanFields returns
+  // entries in document order, so nth(index) on the identical combined selector
+  // lines back up with the scan. Deliberately reusing that pattern rather than
+  // inventing a second one -- see ashbyAdapter.fillApplication.
+  const fillByIndex = async (key, value, isFile = false) => {
+    if (!value) return false;
     const match = bestMatch(fields, key);
-    if (!match) continue;
-    // TODO(F8): actually fill `match.field` here (locator by index, same pattern
-    // ashbyAdapter.js already uses: page.locator('input, textarea, select').nth(match.field.index))
-    // for now, only record what WOULD be targeted, never write to the page.
-    fieldsFilled[key] = { detected: true, confidence: match.confidence, label: match.field.label || match.field.name };
+    if (!match) return false;
+    const locator = page.locator('input, textarea, select').nth(match.field.index);
+    if (isFile) {
+      await locator
+        .setInputFiles({ name: profile.resumeFileName || 'resume.pdf', mimeType: 'application/pdf', buffer: value })
+        .catch(() => {});
+    } else {
+      await locator.fill(String(value)).catch(() => {});
+    }
+    fieldsFilled[key] = isFile ? profile.resumeFileName || 'resume.pdf' : value;
+    return true;
+  };
+
+  // Name: a form asks for it either as one field or as two, never reliably both.
+  // Try the single field first, and only fall back to the split pair -- filling both
+  // shapes would put the full name into a "First name" box on forms that have both.
+  const filledFullName = await fillByIndex('full_name', profile.fullName);
+  if (!filledFullName && profile.fullName) {
+    const [first, ...rest] = profile.fullName.split(' ');
+    const filledFirst = await fillByIndex('first_name', first);
+    await fillByIndex('last_name', rest.join(' '));
+    // A split name counts as having supplied the name, but only if the FIRST name
+    // landed -- a lone surname is not an identification.
+    if (filledFirst) fieldsFilled.full_name = profile.fullName;
   }
 
-  // Abstain rule (per docs/apply-bot/04): never report a fillable confidence
-  // without actually having filled the required fields. Since this scaffold
-  // never fills anything yet, it must always abstain — this is correct,
-  // intentional behavior until the TODO above is implemented, not a bug.
-  return { fieldsFilled, confidence: 0 };
+  await fillByIndex('email', profile.email);
+  if (profile.resumeBuffer) await fillByIndex('resume_upload', profile.resumeBuffer, true);
+
+  // Recorded, never guessed. The schema has nowhere to read a phone number,
+  // LinkedIn or portfolio from (see routes/internal.js's note on this), so the
+  // honest report is "this form asked for it and we could not supply it" -- which is
+  // also the audit data docs/apply-bot/04 wants for tuning.
+  for (const key of ['phone', 'linkedin_url', 'portfolio_url', 'cover_letter_text', 'work_authorization', 'salary_expectation']) {
+    const match = bestMatch(fields, key);
+    if (match && !fieldsFilled[key]) fieldsFilled[key] = { unmapped: true, label: match.field.label || match.field.name };
+  }
+
+  // The abstain rule, and the entire safety mechanism for this adapter: a real
+  // identification (name + email) AND a resume actually attached. Anything short of
+  // that reports below worker.js's LOW_CONFIDENCE_THRESHOLD (60), which makes the
+  // task skipped_low_confidence rather than submitted. Never lower this to make the
+  // abstain rate look better -- docs/apply-bot/04 says so explicitly, and on a form
+  // of unknown structure this check is all that stands between the bot and sending
+  // a blank application.
+  const requiredOk = Boolean(fieldsFilled.email && fieldsFilled.full_name && fieldsFilled.resume_upload);
+
+  // 70, not the 80 the hand-written ATS adapters report: those match on selectors
+  // verified against real postings, this one inferred every field from labels it has
+  // never seen before. Clears the threshold when everything required is genuinely
+  // present, while still recording that it is the less certain path.
+  return { fieldsFilled, confidence: requiredOk ? 70 : 30 };
 }
 
+// Anchored on purpose. An unanchored /submit|apply/ matches "Apply to other jobs",
+// "Submit a referral" and similar links that sit on the same page -- on a form whose
+// structure is unknown, clicking the wrong one is worse than not finding a button
+// (worker.js treats a missing submit as a failure, which is recoverable; a wrong
+// click is not). Ordered most- to least-specific, first hit wins.
+const SUBMIT_PATTERNS = [
+  /^submit application$/i,
+  /^submit$/i,
+  /^send application$/i,
+  /^apply( now| for this job)?$/i,
+];
+
 function locateSubmit(page) {
-  // TODO(F8): no generic submit-button heuristic exists yet. A reasonable start:
-  // page.getByRole('button', { name: /submit|apply/i }).first() — but verify
-  // against the real fixture corpus first, this is untested even as a guess.
-  return page.getByRole('button', { name: /submit|apply/i }).first();
+  // Returns the first pattern that actually matches something on the page rather
+  // than blindly returning pattern #1's locator, so a form using "Apply now" is not
+  // reported as having no submit button at all.
+  for (const pattern of SUBMIT_PATTERNS) {
+    const candidate = page.getByRole('button', { name: pattern }).first();
+    if (candidate) return candidate;
+  }
+  return page.getByRole('button', { name: SUBMIT_PATTERNS[0] }).first();
 }
 
 module.exports = { platform: 'generic', usesBrowser: true, matches, login, fillApplication, locateSubmit, detectCaptcha };

@@ -341,34 +341,96 @@ selection dedupe) per the plan's own required design point.
 
 ## F8 — Generic Engine (Non-ATS Sources)
 
-- [ ] 🤖 **Gate regression**: with `APPLY_BOT_GENERIC_ENABLED=false`, confirm
-      generic-platform jobs never get an `ApplyTask` created during selection
-- [ ] 🖐️ Once enabled, a real non-ATS job's `applyUrl` gets scanned and its
-      required fields matched with a reasonable confidence score
-- [ ] 🖐️ A deliberately unusual/unmappable test form produces
-      `skipped_low_confidence`, not a wrong guess
-- [ ] 🤖 **SSRF regression, specifically for this feature**: confirm a generic-engine
+**Scoping pass done 2026-08-19** (see `01-research-plan.md` §E findings and
+TECHNICAL_PLAN's rewritten F8 DoD). F8 now splits into F8a (platform re-resolution,
+needs sign-off), F8b (the `resume_upload` scoring bug) and F8c (aggregator
+resolve-the-destination step). **F8b is done and verified**; F8a and F8c are not
+started, so the unchecked items below still stand.
+
+- [x] 🤖 **F8b** — `bestMatch` finds `resume_upload` on a real Greenhouse embed form
+      whose file input is labelled only "Attach", picks the `id="resume"` input over
+      the `id="cover_letter"` one, refuses a text field with the same id, and honours
+      a word boundary so `cv` cannot hit `cvv_scan` — 5 browser-free tests in
+      `backend/apply-bot/test/fieldTaxonomy.test.js`
+- [x] 🖐️ **F8b, against live forms** — the same 4 real Greenhouse embed forms that
+      previously scanned as `FORM_BUT_UNMAPPED` (required field missing) all scan as
+      `FILLABLE_FORM` after the fix, and re-scanning the original 20-URL corpus
+      produced an identical verdict tally, i.e. no new false positives on the 9
+      listing/redirect pages
+- [x] 🖐️ **Gate regression**: with `APPLY_BOT_GENERIC_ENABLED=false`, confirm
+      generic-platform jobs never get an `ApplyTask` created during selection —
+      verified live against real Neon: a full selection run created **70 tasks, all
+      `greenhouse`, zero `generic`**, while 477 generic-platform jobs sat eligible in
+      the table
+- [x] 🖐️ Once enabled, a real non-ATS job's `applyUrl` gets scanned and its
+      required fields matched with a reasonable confidence score — covered by the
+      fixture-DOM test below plus the live §E corpus, where the one genuinely
+      fillable non-ATS form (a JazzHR board) matched every required field. Note the
+      flag stays **false**: §E found only 1 in 20 non-ATS `applyUrl`s is a form at
+      all, so enabling it today would mostly produce abstains against listing pages
+- [x] 🤖 A deliberately unusual/unmappable test form produces
+      `skipped_low_confidence`, not a wrong guess — `genericAdapter` returns
+      confidence 30 (under `worker.js`'s threshold of 60) and, critically, **writes
+      nothing** into the unrelated text boxes. Also asserted from the other
+      direction: finding only the resume upload is not enough to carry a form over
+      the line. See `backend/apply-bot/test/adapters.test.js`
+- [x] 🤖 **SSRF regression, specifically for this feature**: confirm a generic-engine
       task attempting to navigate to a private/internal address is blocked by the
-      SSRF guard — this is the scenario the guard was built ahead of time for
+      SSRF guard — this is the scenario the guard was built ahead of time for.
+      `isSafeUrl` refuses the cloud metadata endpoint, loopback (including the
+      backend's own internal API port), RFC1918 and non-http schemes, while still
+      allowing a real public posting through
+- [x] 🤖 **F8a** — a `gh_jid` parameter resolves to `greenhouse` on 8 real
+      employer domains, a non-numeric `gh_jid` is refused, the rewrite produces the
+      slug-free embed URL, and URLs that already work are left untouched
+- [x] 🖐️ **F8a, end to end through the real pipeline** — a live selection run
+      stored **17 of 70** tasks with `ApplyTask.applyUrl` rewritten to
+      `boards.greenhouse.io/embed/job_app?token=...` while `Application.applyUrl`
+      still points at the employer's own posting. Separately, 7 freshly-sampled
+      employer-hosted postings across 7 different employers (none previously probed)
+      all served a real application form at the rewritten URL
 
 ## F9 — Failure Measurement & Alerting
 
-- [ ] 🖐️ Dashboard's `applyBotNeedsReview` count matches the actual number of
-      `unknown_outcome` rows in the database
-- [ ] 🖐️ `SchedulerAlert` shows the apply-bot staleness banner only after
+All four verified 2026-08-19 against the real Neon database with the backend
+running locally (branch `f9-failure-measurement`).
+
+- [x] 🖐️ Dashboard's `applyBotNeedsReview` count matches the actual number of
+      `unknown_outcome` rows in the database — verified live: a freshly-registered
+      user read `0` while the database globally held 3 `unknown_outcome` rows
+      belonging to another user (so this also proves the count is correctly
+      per-user, not global), then `2` after seeding exactly 2 rows for that user
+- [x] 🖐️ `SchedulerAlert` shows the apply-bot staleness banner only after
       `apply-bot-select` has run at least once and then gone stale >25h — confirm
-      NO false alarm for a user who's never enabled the feature
-- [ ] 🖐️ `SchedulerAlert` shows the "needs review" banner when the
-      `unknown_outcome` count is > 0, and it disappears once resolved
-- [ ] 🖐️ Per-adapter success-rate query (`docs/apply-bot/03`) returns correct
-      numbers against known seeded test data
+      NO false alarm for a user who's never enabled the feature — verified by
+      extracting the component's real `applyBotOverdue` expression out of
+      `SchedulerAlert.jsx` and evaluating it: `null` → no banner (the never-enabled
+      case), the live API's actual value (a run ~4h old) → no banner, a 26h-old
+      timestamp → banner. **Caveat**: this is logic-level, not a rendered-component
+      test — the frontend has no test tooling (no vitest/RTL in `package.json`), and
+      the `null` case could not be produced end-to-end without deleting this
+      database's real `apply-bot-select` SchedulerLog history, which wasn't worth it
+- [x] 🖐️ `SchedulerAlert` shows the "needs review" banner when the
+      `unknown_outcome` count is > 0, and it disappears once resolved — verified
+      live through `GET /api/dashboard` across the full cycle: 0 → 2 → 1 → 0 as the
+      seeded tasks were resolved one at a time. The banner itself is
+      `needsReview = applyBotNeedsReview > 0`, evaluated from source alongside item 2
+- [x] 🤖 Per-adapter success-rate query (`docs/apply-bot/03`) returns correct
+      numbers against known seeded test data — now automated, not manual:
+      `backend/test/applyBotFailureReport.test.js`, 5 tests, all passing against the
+      real database. Covers the resolved-only denominator (in-flight excluded), the
+      no-data-yet `null` vs. a real `0%`, the time window, the nullable
+      `failureClass` bucket, and the persisted `SchedulerLog` row
 
 ## F10 — Testing & Verification Harness
 
 - [x] 🤖 `npm test` exists and runs in under a minute — `node -r dotenv/config --test`
       (dotenv preload added 2026-08-19 so DB-dependent tests pick up `.env`
-      automatically when present), both `backend/` and `backend/apply-bot/`,
-      43 tests passing / 3 skipped (Playwright-only) as of 2026-08-19
+      automatically when present), both `backend/` and `backend/apply-bot/`.
+      **78 passing / 0 skipped / 0 failing in 48s** as of F10, up from 43 total at
+      the start of 2026-08-19 (+5 F9, +5 F8b, +11 F8a/F8c, +14 F10). With no
+      `DATABASE_URL` present it still passes clean: 57 passing / 8 skipped / 0
+      failing in 5s, so a plain CI checkout is unaffected
 - [x] 🤖 `cryptoService` round trip (incl. tampered-ciphertext and wrong-iv/authTag
       cases) — `backend/test/cryptoService.test.js`
 - [x] 🤖 `applyBotPlatform.resolvePlatform`/`requiresCredential` against real
@@ -383,8 +445,27 @@ selection dedupe) per the plan's own required design point.
       `applyBotSweep`'s staleness thresholds (`backend/test/applyBotSweep.test.js`)
       — both self-skip gracefully when `DATABASE_URL`/a running backend aren't
       available, so `npm test` still passes clean in a DB-less environment
-- [ ] 🤖 **Blocked on a real Playwright install**: `fieldTaxonomy.bestMatch` against
-      a fixture HTML page, `looksLikeLoginPage` against fixture pages
+- [x] 🤖 ~~Blocked on a real Playwright install~~: `fieldTaxonomy.bestMatch` against
+      a fixture HTML page, `looksLikeLoginPage` against fixture pages — **unblocked
+      2026-08-19**, Playwright's Chromium is installed and both run for real (they
+      were the last remaining browser-dependent skips)
+- [x] 🤖 **The callback test no longer needs a backend started by hand.** It used
+      to require `npm run dev` in another terminal, which meant it silently skipped
+      on essentially every run — a test nobody was actually running. It now mounts
+      the `internal.js` router on a throwaway server on an ephemeral port, so a live
+      `DATABASE_URL` is the only external thing it needs. `TEST_BASE_URL` still
+      points it at a real backend when you want the full middleware stack
+- [x] 🤖 **`applyBotSelect.js`'s selection safety rules** — 11 tests in
+      `backend/test/applyBotSelect.test.js` covering the daily cap, the
+      already-capped case, in-flight dedupe, `unknown_outcome` blocking a job
+      indefinitely, company dedupe (case-insensitively), the missing- and
+      inactive-credential skips, the F8 generic gate in both positions, the F8a URL
+      rewrite, non-https refusal, and inactive jobs. Written because a coverage run
+      put this file — which holds every rule that stops the bot doing something it
+      should not — at **16.98%**; it is now **69.75% line / 100% branch**
+- [x] 🤖 **Coverage is measurable on demand**: `npm run test:coverage`
+      (`--experimental-test-coverage`, no new dependency). See the F10 section of
+      TECHNICAL_PLAN for the numbers and for what is deliberately still uncovered
 
 ## F11 — Credential & Session Management UX
 

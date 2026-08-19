@@ -62,15 +62,27 @@ backend/
 ├── jobs/
 │   ├── applyBotSelect.js                 ✅[F2] selection + dedupe + cap + kill switch
 │   ├── applyBotSweep.js                  (existing — stale-task cleanup)
-│   ├── applyBotFailureReport.js          🏗️[F9] — per-adapter success-rate reporting
+│   ├── applyBotFailureReport.js          ✅[F9] — per-adapter success-rate reporting
 │   │                                          (filename decision made 2026-08-17;
-│   │                                          previously unnamed in this document)
+│   │                                          previously unnamed in this document;
+│   │                                          implemented 2026-08-19)
 │   └── emailStatusSync.js                🏗️[F14]
 ├── test/
 │   ├── cryptoService.test.js             ✅[F10]
 │   ├── applyBotPlatform.test.js          ✅[F10]
 │   ├── applyTaskCallback.test.js         🏗️[F10] — skipped until a live DB exists
-│   └── applyBotSweep.test.js             🏗️[F10] — skipped until a live DB exists
+│   ├── applyBotSweep.test.js             🏗️[F10] — skipped until a live DB exists
+│   ├── applyBotSelect.test.js            ✅[F10] — selection safety rules: daily cap,
+│   │                                            dedupe, credential requirement, the
+│   │                                            F8 generic gate, F8a URL rewrite.
+│   │                                            Added to this manifest 2026-08-19
+│   │                                            BEFORE the file was created.
+│   └── applyBotFailureReport.test.js     ✅[F9] — F9's per-adapter/failure-class
+│                                               numbers against seeded fixture rows;
+│                                               skipped until a live DB exists.
+│                                               Added to this manifest 2026-08-19
+│                                               BEFORE the file was created, per the
+│                                               rule at the top of this section.
 └── apply-bot/                            separate Railway service, see F3
     ├── package.json / Dockerfile / .env.example
     ├── src/
@@ -89,7 +101,7 @@ backend/
     │   │   ├── greenhouseAdapter.js      ✅[F5]
     │   │   ├── leverAdapter.js           ✅[F4]
     │   │   ├── ashbyAdapter.js           ✅[F6]
-    │   │   └── genericAdapter.js         🏗️[F8]
+    │   │   └── genericAdapter.js         ✅[F8] implemented 2026-08-19, still gated off
     │   ├── engine/
     │   │   ├── fieldTaxonomy.js          ✅[F5/F6/F8] generic field matching
     │   │   ├── captchaDetector.js        (existing — + looksLikeLoginPage; 🏗️[F7]: detectEmailVerification stub added)
@@ -805,8 +817,12 @@ automatically afterward.
 
 ## F8 — Generic Engine (Non-ATS Sources)
 
-**Status**: not started, deliberately gated off (`APPLY_BOT_GENERIC_ENABLED=false`
-in `applyBotSelect.js`).
+**Status**: ✅ done and verified 2026-08-19. F8a (platform re-resolution) and F8b
+(the `resume_upload` scoring bug) are built and verified against real postings;
+`genericAdapter.js` is now implemented rather than scaffolded. F8c is **researched
+and deliberately closed without building** — see its subsection below for the
+numbers. `APPLY_BOT_GENERIC_ENABLED` stays `false`, which is a conclusion of the
+research rather than an unfinished step.
 **Depends on**: nothing hard — soft-sequenced after F4/F5/F6 so `fieldTaxonomy.js`
 isn't being tuned by four people at once, and so there's real data on which fields
 those three adapters' fallback logic already handles well before duplicating effort.
@@ -830,19 +846,92 @@ The abstain rule (never guess on required fields) is the entire safety mechanism
 here; do not weaken `MIN_CONFIDENCE_TO_FILL` to make this feature's numbers look
 better (see `docs/apply-bot/04`'s explicit warning against this).
 
-**Definition of done**: not defined yet — this feature needs its own scoping pass
-once F4-F7 are done and real data exists on how often non-ATS `applyUrl`s actually
-resolve to something fillable at all (many are redirect/listing pages, not forms —
-this may turn out to be a much smaller feature than it sounds, or may need a
-resolve-the-real-destination-first step not yet designed).
+**Definition of done** — the scoping pass this section asked for ran 2026-08-19; full
+evidence is in `01-research-plan.md` §E ("DONE — findings"). It answered the question
+this section left open, and the answer changes what F8 is:
+
+> *"this may turn out to be a much smaller feature than it sounds, or may need a
+> resolve-the-real-destination-first step not yet designed"* — **both, as it turns
+> out.** Only **1 of 20** real non-ATS `applyUrl`s landed on a directly fillable form.
+> Meanwhile **611 of 1088** URLs currently classed `generic` (56%, measured across the
+> whole database) are Greenhouse boards on company domains that `resolvePlatform()`
+> misses because it only inspects `hostname` and ignores the `gh_jid` query parameter.
+
+So the generic field-matching engine — the thing this feature was named after — is
+the **lowest**-value part of the work, and the taxonomy's synonym list is not the
+bottleneck (§E Finding 5). F8 splits into three pieces of very unequal value:
+
+**F8a — platform re-resolution (highest value, lowest risk).** Teach
+`resolvePlatform()` (and `adapters/index.js`) that a `gh_jid=` parameter means
+Greenhouse regardless of hostname, and rewrite the applyUrl to the **embed** form
+(`job-boards.greenhouse.io/embed/job_app?for=<company>&token=<gh_jid>`) — *not* the
+canonical board URL, which redirects straight back to the company site (§E Finding 2).
+Routes 611 jobs to the already-verified F5 adapter, whose `#resume` selector is
+confirmed to match on those embed forms (§E Finding 3). **Needs explicit sign-off**:
+it moves 611 jobs onto a platform where `requiresCredential()` is true, so any user
+without a stored Greenhouse credential goes from "generic, attempted" to "skipped" —
+a real behaviour change, not a refactor.
+
+**F8b — the `resume_upload` scoring bug (small, self-contained, pure improvement).**
+On 4 of 4 real Greenhouse embed forms the file input is labelled "Attach" and carries
+`id="resume"`, but `scoreFieldForKey()` scores an id/name hit at `NAME_ATTR` (35),
+under `MIN_CONFIDENCE_TO_FILL` (60) — so the strictest gate in the whole engine (§04)
+fails on an unambiguous signal. Note `bestMatch()` already restricts `resume_upload`
+candidates to `type === "file"`, which makes an id/name hit *far* stronger evidence
+here than the same hit on a text field; the scoring doesn't reflect that. Fixing this
+is §04's blessed "case 2" (a real field under an unrecognised label — pure
+improvement, no accuracy tradeoff). Careful: these forms have **two** file inputs
+(`id="resume"` and `id="cover_letter"`), both labelled "Attach", so a naive
+`'attach'` synonym would match the cover-letter input too — which is exactly why the
+fix should key off the id/name, not the visible label.
+
+**F8c — the aggregator residual (largest remaining, lowest confidence).** The true
+unknown is 477 URLs across exactly 8 aggregator hosts (§E Finding 6), essentially all
+listing pages. This is where the "resolve-the-real-destination-first step not yet
+designed" actually belongs: follow the page's apply link, then re-resolve the
+destination (which may well be a 4th ATS — the one success was a JazzHR board at
+`applytojob.com`). Until that step exists, a generic *field-filling* engine has almost
+nothing to point at, so **F8c should not start with `fieldTaxonomy.js` tuning.**
+
+**Outcome, 2026-08-19.** F8b and F8a are done and verified; F8a was explicitly
+signed off before shipping. `genericAdapter.js`'s TODOs are filled in too, so the
+generic engine is correct and safe *when* enabled. `APPLY_BOT_GENERIC_ENABLED` stays
+`false` — not as an unfinished step but as the research's conclusion.
+
+**F8c: researched, deliberately not built.** The follow-the-apply-link idea was
+probed on 16 real aggregator postings, 2 per host across all 8 hosts. Only **3 of 16
+(19%)** reached a fillable form, and **2 of those 3 landed on Greenhouse and Ashby**
+— platforms with verified adapters already, i.e. the payoff here is again *routing*,
+not generic filling. The third landed on JazzHR (`applytojob.com`), where the
+existing synonyms already match every required field; if F8c is ever revived, a small
+JazzHR adapter is a better first move than a link-follower.
+
+The failures are structural, not fixable by better heuristics:
+- **weworkremotely.com** — "Apply now" leads to *"Create an account to view full
+  job"*. A login wall the bot has no account for.
+- **remoteok.com** — "Apply" points at a `/l/<id>` tracking gateway that bounced
+  straight back to the same page.
+- **himalayas.app, mustakbil.com, remotive.com** — **zero** apply anchors on the
+  page at all (4 postings, 2 each): the control is scripted or gated, not an `<a>`.
+
+One honest caveat on that 19%: the probe's link-picking heuristic is weak, and it
+demonstrably misfired on `arbeitnow.com`, where it followed a blog post titled
+*"Applying for German Citizenship"* instead of the real apply control. So the true
+ceiling is somewhat above 19% — but the login walls and missing anchors above cap it
+well short of anything that would justify the build now.
+
+**If F8c is revived**, the sequence the evidence supports is: (1) a JazzHR adapter,
+(2) a link-follower whose *only* job is to re-resolve into an existing adapter, and
+(3) generic filling last, if ever.
 
 ---
 
 ## F9 — Failure Measurement & Alerting
 
-**Status**: 🟡 partially built (2026-08-17, Reliability Hardening pass) — the
-staleness/needs-review alerting half is done; the per-adapter success-rate reporting
-half is not.
+**Status**: ✅ done and verified (2026-08-19). The staleness/needs-review alerting
+half landed 2026-08-17 (Reliability Hardening pass); the per-adapter success-rate
+reporting half landed 2026-08-19 in `jobs/applyBotFailureReport.js`. All four of
+TEST_PLAN's F9 items verified against the real Neon database.
 **Depends on**: nothing (reads `ApplyTask` data that F1/F2 already produce).
 **Wave 1 — the remaining work can start immediately.** **Shares files with**: none —
 new files only.
@@ -853,30 +942,80 @@ new files only.
 job-fetch staleness banner. This closes the "is the pipeline quiet" and "is
 something stuck needing a human" visibility gaps — see "Reliability Hardening" §4.
 
-**What's still open**: `docs/apply-bot/03-failure-measurement.md`'s per-adapter
-success-rate and failure-class-breakdown queries — turning those into something
-that doesn't require manually running Prisma queries. Start with the cheapest
-version: a script (or a `SchedulerLog`-style entry written after each
-`applyBotSelect.js` run) that computes the breakdown and logs it via Winston. Only
-build actual dashboard UI for this once there's enough real volume for it to be more
-useful than reading logs.
+**What was built for the remaining half (2026-08-19)**: `runApplyBotFailureReport()`
+computes §03's §1 overall success rate, §2 abstain rate, §4 failure-class breakdown
+and §5 per-adapter success rate over a rolling window (default 7 days) in exactly
+two `groupBy` queries — one on `(adapterUsed, status)`, which the overall figures are
+derived from rather than re-queried, plus one on `failureClass`. It runs three ways:
+automatically at the end of every `applyBotSelect.js` run (on **both** sides of the
+kill switch, for the same reason the sweep is unconditional — a team that just
+disabled the bot after a bad week is exactly the team that still needs the numbers),
+on demand via `node -r dotenv/config jobs/applyBotFailureReport.js [windowDays]`, and
+readable after the fact from the `apply-bot-failure-report` `SchedulerLog` rows it
+writes (full report JSON in the existing `sourceBreakdown` column — no schema change).
+
+Two deliberate calls worth knowing about:
+- A rate with nothing resolved to divide by returns `null`, never `0`. "No data yet"
+  and "0% success" are different answers and collapsing them would make the report
+  actively misleading — a brand-new adapter would read as a broken one.
+- §03's ">50% per-adapter failure rate" alert is a `logger.warn`, guarded by a
+  20-resolved-task minimum, **not** a dashboard banner — §03 itself says not to build
+  alert UI before there's real volume to calibrate thresholds against.
+
+**Still deliberately not built**: §03's §3 CAPTCHA-hit rate, §6 confidence-score
+histogram, and §7 cap sanity check — out of scope for F9's stated remaining half
+(per-adapter success rate + failure-class breakdown), and each needs its own query
+rather than falling out of the two above for free. §3 is the most likely next
+addition, since it's the before/after metric for F7's live-view work.
 
 **Risks**: low — this is straightforward reporting work, mostly bounded by how much
 real `ApplyTask` data exists to report on.
 
 **Definition of done**: after a batch of F5/F6 test runs, someone can answer "what's
 our Greenhouse success rate this week" without hand-writing a Prisma query each time.
+**Met 2026-08-19** — `node -r dotenv/config jobs/applyBotFailureReport.js 7` against
+the real database answered exactly that question (`greenhouse 22.2% (2/9)`,
+`lever 0% (0/3)`, failure classes `TIMEOUT: 3, CAPTCHA: 3`) with no query written by
+hand.
 
 ---
 
 ## F10 — Testing & Verification Harness
 
-**Status**: 🟡 partially built, 2026-08-17 — everything not requiring a live
-database or a real browser is done and passing (37 tests, `npm test` in either
-`backend/` or `backend/apply-bot/`, using Node's built-in test runner —
-`node --test`, zero new dependencies). What's still open: the DB-dependent
-integration smoke test (item 4 below) and anything needing a real Playwright
-session (fixture-HTML field-matching tests, item 3).
+**Status**: ✅ done and verified 2026-08-19. Every item below is built and running:
+**78 passing / 0 skipped / 0 failing in 48s** with a live `DATABASE_URL`, and 57
+passing / 8 skipped / 0 failing without one. Still zero new dependencies — Node's
+built-in runner throughout.
+
+Three things closed the remaining gaps: Playwright is actually installed now (item 3),
+the callback test starts its own server instead of requiring one (item 4), and
+`applyBotSelect.js` — which a coverage run exposed at **16.98%** — got a real suite.
+
+**Coverage**, via `npm run test:coverage` (`--experimental-test-coverage`):
+
+| Area | line % | branch % |
+|---|---|---|
+| `applyBotPlatform.js` | 97.80 | 96.30 |
+| `genericAdapter.js` | 97.12 | 75.86 |
+| `applyBotFailureReport.js` | 89.41 | 84.00 |
+| `applyBotSweep.js` | 87.50 | 80.00 |
+| `ssrfGuard.js` | 86.18 | 88.24 |
+| `fieldTaxonomy.js` | 77.78 | 85.71 |
+| `applyBotSelect.js` | 69.75 (was 16.98) | 100.00 |
+| `internal.js` | 65.41 | 60.00 |
+| **whole backend** | **59.20** | **82.49** |
+
+The whole-backend line figure is worth reading carefully rather than as a grade: the
+apply-bot feature files above are all 65-98%, and the number is dragged down by
+pre-existing code **outside this feature** that has never had tests — `jobFetcher.js`
+(27%), `matchingEngine.js` (36%), `storageService.js` (42%), `dailyJobFetch.js` (17%).
+Raising those is real work, but it is not F10, and padding this feature's tests would
+not move it either.
+
+Deliberately still uncovered inside the feature: `runApplyBotSelection()`'s
+all-users loop (tests target `selectForUser` instead, since looping every user in a
+shared database is not something a test may do), and the adapters' browser-driving
+halves, which need a live posting rather than a fixture.
 **Depends on**: nothing to *start* (crypto/platform-resolution tests need only F1/F2,
 already built). **Wave 1 — start immediately, ideally before anything else.**
 **Shares files with**: none directly — test files only, read the adapter files as
@@ -928,9 +1067,10 @@ Worth doing in parallel with Track A from day one rather than "after."
 
 **Definition of done**: `npm test` (`node --test`, wired into both
 `backend/package.json` and `backend/apply-bot/package.json` — no new dependency)
-covers all items above and runs in under a minute — currently true for the 37
-browser-free/DB-free tests; the remaining DB- and browser-dependent items complete
-this once F1's migration is actually applied and Playwright is actually installed.
+covers all items above and runs in under a minute. **Met 2026-08-19**: 78 passing,
+0 skipped, 0 failing, 48s. Both remaining blockers named in the original wording are
+gone — F1's migration is applied and Playwright is installed — and the one test that
+needed a hand-started backend now starts its own.
 
 ---
 

@@ -118,6 +118,11 @@ backend/
 
 frontend/src/
 ├── api/applyBot.js                       ✅[F11] task/credential API client
+├── lib/liveViewProtocol.js               ✅[F11] Contract B message build/parse +
+│                                               0..1 pointer normalization, kept as
+│                                               pure functions so they are testable
+│                                               without a DOM. Added to this manifest
+│                                               2026-08-19 BEFORE the file was created.
 ├── constants/applyTaskStatus.js          ✅[F9]
 ├── hooks/useApplyTasks.js                ✅[F9]
 ├── theme/statusColors.js                 (existing — getApplyTaskStatusColor added)
@@ -127,13 +132,21 @@ frontend/src/
 │   ├── CoverLetterModal.jsx              (existing — F13's "Mark as Applied" added)
 │   ├── ApplicationRow.jsx                (existing — F13's source/ghosted badges added)
 │   ├── SchedulerAlert.jsx                (existing — F9's apply-bot health added)
-│   └── ApplyBotLiveView.jsx              🏗️[F11] — built against Contract B
+│   └── ApplyBotLiveView.jsx              ✅[F11] — Contract B client, wired into AutoApply.jsx 2026-08-19
 ├── pages/
 │   ├── AutoApply.jsx                     ✅[F9] read-only task list page
 │   ├── Dashboard.jsx                     (existing — F9/F13 wiring added)
 │   └── Settings.jsx                      (existing — 🏗️[F11]: credential CRUD
 │                                                section added, form fields TODO)
 └── (no new page for F11 — the credential form lives inside Settings.jsx per above)
+
+frontend/test/
+└── liveViewProtocol.test.js              ✅[F11/F10] — Contract B conformance.
+                                                Runs on Node's built-in runner
+                                                (`npm test` in frontend/), zero new
+                                                dependencies, same approach as the
+                                                backend. Added to this manifest
+                                                2026-08-19 BEFORE the file existed.
 
 docs/apply-bot/
 ├── README.md, TECHNICAL_PLAN.md (this document), TEST_PLAN.md
@@ -1076,7 +1089,9 @@ needed a hand-started backend now starts its own.
 
 ## F11 — Credential & Session Management UX
 
-**Status**: not started. Backend API exists (`applyCredentials.js`), no frontend.
+**Status**: ✅ done and verified 2026-08-19. Both halves are built: the Settings
+credential CRUD and `ApplyBotLiveView.jsx`, the latter now wired into
+`AutoApply.jsx` and talking to F7's real backend rather than a stub.
 **Depends on**: nothing for the credential-CRUD half (F1's API already exists —
 **Wave 1, start immediately**). The live-view half depends only on Contract B
 (above) being read, not on F7's actual backend existing — build against a stubbed
@@ -1103,7 +1118,34 @@ alarming. Worth a quick design pass, not just a functional canvas element.
 
 **Definition of done**: a user can add a Greenhouse credential through the UI (no
 `curl`/Postman needed), see it listed (without ever seeing the secret again, per
-F1's existing redaction), and delete it.
+F1's existing redaction), and delete it. **Met 2026-08-19**, driven through a real
+browser against the built app — 9/9 checks, see TEST_PLAN's F11 section.
+
+**What was built beyond the bare CRUD, and why:**
+- `lib/liveViewProtocol.js` — Contract B's message building/parsing and the 0..1
+  pointer normalization, pulled out as pure functions. The component around them
+  needs a browser and a socket; these do not, and they are the parts that fail
+  *silently* rather than loudly. An out-of-range coordinate throws nowhere: the
+  apply-bot side simply denormalizes it and clicks off-page.
+- `frontend/test/` — the frontend had no test tooling at all, which is why F9's
+  `SchedulerAlert` items could only be verified at logic level. Node's built-in
+  runner works on this ESM codebase with **zero new dependencies**, so `npm test`
+  now exists on both sides of the repo. 16 tests.
+- A `size` prop on `ui/Modal` (default unchanged) — a full browser screenshot is
+  unreadable at the default dialog width.
+
+**Three real bugs found while wiring this up**, all pre-existing:
+1. The frontend still used the pre-F7 status name `paused_captcha` in three places
+   (`constants/applyTaskStatus.js`, `theme/statusColors.js`, `hooks/useApplyTasks.js`).
+   The backend has written `paused_human` since F7. The damaging one was in the
+   polling hook: `ACTIVE_STATUSES` did not contain the real paused status, so the
+   moment a task actually needed a human the 5-second refetch **stopped** — exactly
+   when the UI most needed to keep looking.
+2. `routes/applyTasks.js` never exposed `pauseReason`. F7 added the column; nothing
+   surfaced it, so the live-view could not tell "solve a CAPTCHA" from "fetch a code
+   from your inbox". Added to `publicTask`.
+3. `npm ci` fails outright in `frontend/` — recorded in MEMORY's Open Questions,
+   since it blocks deployment rather than this feature.
 
 ---
 

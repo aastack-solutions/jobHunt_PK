@@ -43,7 +43,7 @@ touching what.
 | F8 | Generic engine (non-ATS sources) | ✅ Done, verified | Claude (session) | F8a + F8b built and verified against real postings; `genericAdapter.js` implemented. F8c researched and deliberately closed — 3/16 aggregator postings reachable, and 2 of those 3 land on adapters we already have. `APPLY_BOT_GENERIC_ENABLED` stays false as a *conclusion*, not a gap |
 | F9 | Failure measurement & alerting | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon — all 4 test-plan items pass. Remaining half built (`jobs/applyBotFailureReport.js`); 1 real design bug found & fixed during verification (report skipped entirely when the kill switch was off). Item 2 verified at logic level only — frontend has no test tooling |
 | F10 | Testing & verification harness | ✅ Done, verified | Claude (session) | 78 passing / 0 skipped / 0 failing in 48s (43 total at start of 2026-08-19). Last blockers cleared: Playwright installed, callback test now starts its own server, and `applyBotSelect.js` went 16.98% -> 69.75% line / 100% branch. `npm run test:coverage` added |
-| F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
+| F11 | Credential & session management UX | ✅ Done, verified | Claude (session) | Both halves built: Settings credential CRUD + `ApplyBotLiveView` wired into AutoApply. Verified through a real browser, 9/9 checks. 3 pre-existing bugs found and fixed (stale `paused_captcha` in 3 places incl. a polling bug, `pauseReason` never exposed by the API). Frontend now has tests: 16, zero new dependencies |
 | F12 | Live-mode rollout & safety ops | 🟡 Unblocked, not started | Unassigned | F5/F6/F8/F9/F10 all done now — no build blockers left. What remains is F12 own checklist: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17), kill-switch drill, and the first real live-mode application |
 | F13 | Unified application tracking (source, resume link, ghosted) | ✅ Built, ⚠️ untested | — | Closes the pre-existing "Apply button doesn't track" gap too — see Decisions Log 2026-08-17 |
 | F14 | Email-based application status auto-detection | 🔵 Researched + specified, not built | Unassigned | User opted in to scoping this — needs a real Google Cloud OAuth app before any code can be tested |
@@ -53,6 +53,70 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F11 completed: credential UI, live-view wired to F7's real backend, and three pre-existing frontend bugs found on the way
+Branch: `f11-credential-ux` (off `f10-testing-harness`; F8/F9/F10 are all still
+unmerged to `master`).
+
+**Both halves of F11 are built.** The Settings credential CRUD lives inside
+`Settings.jsx`, as the plan's file manifest requires. The shape of that UI is
+dictated by one existing rule: the API never returns a stored secret
+(`applyCredentials.js`'s `publicCredential` strips every encrypted field), so there
+is no "edit" that pre-fills anything — saving always means typing a fresh username
+and password, and the dialog says so out loud when one is already stored. Deleting
+asks for confirmation, because it silently stops the bot applying to that platform
+altogether.
+
+`ApplyBotLiveView.jsx` is finished and now wired into `AutoApply.jsx`, which grew a
+banner at the top for tasks sitting at `paused_human` — those are doing nothing at
+all until a person clears them, and they time out (`applyBotSweep`'s
+`PAUSED_STALE_MS`), so burying them as one more row in a long table was not good
+enough.
+
+**Three pre-existing bugs, all found by wiring rather than by reading:**
+
+1. **The frontend was still on the pre-F7 status name.** `paused_captcha` appeared in
+   three files while the backend has written `paused_human` since F7 renamed it. The
+   damaging one was `useApplyTasks.js`: its `ACTIVE_STATUSES` set drives a 5-second
+   refetch, and because the real paused status was not in it, polling **stopped at
+   exactly the moment a task started needing a human**. F7's scope was backend-only
+   and nothing carried the rename across; F11 owns this UI, so it was fixed here.
+2. **`routes/applyTasks.js` never exposed `pauseReason`.** F7 added the column and
+   nothing surfaced it, so the live-view had no way to tell "solve a CAPTCHA" from
+   "fetch a code from your inbox" — it could only ever have said "something needs
+   attention". One additive field on `publicTask`.
+3. **`npm ci` fails outright in `frontend/`** — recorded under Open Questions since it
+   blocks deployment, not this feature.
+
+**Design calls worth not re-litigating:**
+- Contract B's message building/parsing and the 0..1 pointer normalization live in a
+  pure module (`lib/liveViewProtocol.js`), not in the component. They are the parts
+  that fail *silently*: a coordinate outside 0..1 throws nowhere, the apply-bot side
+  just denormalizes it and clicks off-page. Pulling them out is what made them
+  testable at all.
+- `parseServerMessage` refuses any frame whose `image` is not a `data:` image URL.
+  The frame is assigned straight to an `<img>` src, so that is the one place a buggy
+  or hostile server could otherwise put an arbitrary URL into the page. It returns
+  null rather than throwing — one bad frame must not tear down a session a human is
+  midway through.
+- Mouse moves are throttled to one per 50ms. Unthrottled `onMouseMove` fires far
+  faster than the far side can act on, over a socket already carrying screenshots.
+- An emailed code gets a normal text input next to the canvas rather than requiring
+  the human to click into a remote field pixel-perfectly.
+
+**The frontend has tests now**, which it never did — that gap is why F9's
+`SchedulerAlert` items could only be checked at logic level. Node's built-in runner
+works on this ESM codebase with **zero new dependencies**, so `npm test` exists on
+both sides of the repo: 16 tests in `frontend/test/liveViewProtocol.test.js`.
+
+**Verification.** `npm run build` succeeds (2327 modules, no errors). Items 1-3 of
+TEST_PLAN's F11 were driven through a real Chromium against the built frontend served
+by the backend — sign in, add a Greenhouse credential through the UI, confirm the
+password appears nowhere in the text, the DOM, or the API response, delete it through
+the UI, confirm it is gone: **9/9 checks passed**. Items 4-5 are the 16 protocol
+tests. Suites: frontend 16/16, backend 78/78, 0 skipped, 0 failing. All three test
+users created during verification were deleted; the database is back to 1 user, 10
+`ApplyTask` rows, 1 credential.
 
 ### 2026-08-19 — F10 completed: the suite now runs itself, and the riskiest file in the feature finally has tests
 Branch: `f10-testing-harness` (off `f8-generic-engine`, since F8/F9 are not merged to
@@ -1099,6 +1163,17 @@ first time someone actually fills in a TODO.
 
 ## Open Questions
 
+- **`npm ci` fails in `frontend/`, which means the Railway build cannot run.**
+  Found 2026-08-19 during F11. `@vitejs/plugin-react@4.5.0` declares
+  `peer vite@"^4.2.0 || ^5.0.0 || ^6.0.0"`, but the project pins `vite@8.0.16`, so
+  npm refuses to resolve. Railway's documented build command is
+  `cd frontend && npm ci && npm run build`, so this blocks deployment, not just local
+  work. Note `@vitejs/plugin-react` is **not** in `frontend/CLAUDE.md`'s pinned list,
+  while `vite` is — so the fix that respects every documented pin is to bump the
+  plugin to a version whose peer range includes vite 8, leaving vite itself alone.
+  Not done here: it is a dependency change outside F11's scope and wants explicit
+  sign-off. Local verification for F11 used `npm install --legacy-peer-deps`, which
+  changes nothing in the repo. **Unresolved.**
 - **What F8's definition of done actually is.** `TECHNICAL_PLAN.md` leaves it
   undefined on purpose, pending a scoping pass "once F4-F7 are done and real data
   exists on how often non-ATS `applyUrl`s actually resolve to something fillable at

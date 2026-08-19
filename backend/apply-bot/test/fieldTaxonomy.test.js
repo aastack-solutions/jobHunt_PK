@@ -1,17 +1,23 @@
 // F10 — fieldTaxonomy.js's bestMatch()/scanFields() against a fixture HTML page.
-// SKIPPED: scanFields() takes a real Playwright `page` object and calls
-// page.evaluate() — there is no way to fake that without either a real browser
-// (Playwright isn't installed in this environment — npm install never ran) or
-// pulling in a DOM-emulation library (jsdom) as a new dependency, which wasn't
-// judged worth adding just for this. Un-skip once Playwright is actually
-// installed; the fixture below is ready to use as-is.
+// Un-skipped 2026-08-19 (F3 verification session) now that Playwright's Chromium
+// is actually installed locally. `playwright` is still required lazily, inside the
+// test body below, not here — a top-level require throws immediately if Playwright
+// isn't installed, even before the skip check runs (skip only skips the test body,
+// not module-level requires), so this file must keep working in an environment
+// without it.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-// `playwright` is required lazily, inside the test body below, not here — a
-// top-level require would throw as soon as Node discovers this file (playwright
-// isn't installed yet), even though the test itself is marked skipped. Skipping a
-// test only skips its body, not module-level requires.
 const { scanFields, bestMatch } = require('../src/engine/fieldTaxonomy');
+
+function playwrightAvailable() {
+  try {
+    require.resolve('playwright');
+    return true;
+  } catch {
+    return false;
+  }
+}
+const skipReason = playwrightAvailable() ? false : 'requires Playwright to be installed (npm install + npx playwright install chromium)';
 
 // A small, realistic fixture covering the required fields plus one deliberately
 // ambiguous field, so this test can assert both "finds what it should" and
@@ -27,7 +33,7 @@ const FIXTURE_HTML = `
 </body></html>`;
 
 test('fieldTaxonomy: finds email/first_name/resume_upload with high confidence in a real DOM',
-  { skip: 'requires a real Playwright browser — not installed in this environment yet' },
+  { skip: skipReason },
   async () => {
     const { chromium } = require('playwright');
     const browser = await chromium.launch();

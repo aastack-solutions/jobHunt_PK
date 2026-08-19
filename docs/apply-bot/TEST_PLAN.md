@@ -69,28 +69,57 @@ these can't be automated away and shouldn't be skipped just because they're slow
 
 ## F3 — apply-bot Service Scaffold & Worker Runtime
 
-- [ ] 🖐️ `docker build` succeeds for `backend/apply-bot/`
-- [ ] 🖐️ `npm install && npx playwright install --with-deps chromium` completes with
-      no errors; note the actual resolved Playwright version against the stale-pin
-      finding (bump `package.json` if it resolved something unexpectedly old)
-- [ ] 🖐️ `GET /health` on the apply-bot service → `{ status: 'ok', service: 'apply-bot' }`
-- [ ] 🖐️ Manually enqueue an `apply-bot-tasks` job → worker claims it, launches a
-      real browser, reaches `page.goto()` on the target URL
-- [ ] 🖐️ **Graceful shutdown**: start a task, send `SIGTERM` to the process mid-task
-      — confirm `worker.close()` waits for that task to actually finish (check logs
-      for "worker closed cleanly") rather than killing it outright
-- [ ] 🖐️ A deliberately-hung task (e.g. point at a URL that never resolves) gets
+**Verified 2026-08-19 (local Windows dev, no Docker) — see MEMORY.md.** Two items
+are genuine environment blockers, not skipped carelessly: no Docker on this machine,
+and Windows doesn't reliably deliver `SIGTERM`/`SIGINT` between unrelated processes
+(two independent delivery attempts both silently killed the target instead of
+invoking its handler) — both need the real Railway Linux deployment to test for real.
+
+- [ ] 🖐️ **BLOCKED — no Docker installed on this machine.** `docker build` succeeds
+      for `backend/apply-bot/` — not attempted; Dockerfile reviewed and matches the
+      verified-working native `npm install` + `npx playwright install chromium` steps
+- [x] 🖐️ `npm install && npx playwright install --with-deps chromium` completes with
+      no errors — bumped the stale `1.49.1` pin to `1.62.1` (current stable) first,
+      per the plan's own flagged risk; resolved Chromium 151.0.7922.34
+- [x] 🖐️ `GET /health` on the apply-bot service → `{ status: 'ok', service: 'apply-bot' }`
+- [x] 🖐️ Manually enqueue an `apply-bot-tasks` job → worker claims it, launches a
+      real browser, reaches `page.goto()` on the target URL — full pipeline verified:
+      claimed → navigated to a real `greenhouse.io` page → scanned fields → correctly
+      abstained (`skipped_low_confidence`, since the target wasn't a real application
+      form) → reported back, ~66s round trip
+- [ ] 🖐️ **BLOCKED — Windows signal-delivery limitation, not attempted successfully.**
+      Graceful shutdown (`SIGTERM` mid-task → `worker.close()` waits for the task):
+      tried `taskkill` without `/F` (Windows refuses: "can only be terminated
+      forcefully"), then `process.kill(pid, 'SIGTERM')` and `process.kill(pid,
+      'SIGINT')` from a separate Node process (both silently force-killed the target
+      with no shutdown log at all, rather than invoking its handler) — a known Node-
+      on-Windows limitation for cross-process signal delivery, not something this
+      environment can test reliably. The code was reviewed instead: `server.js`
+      registers both signals against the same `shutdown()` function, which correctly
+      awaits `worker.close()` (a BullMQ-library-guaranteed wait-for-current-job) before
+      `process.exit(0)`. Needs re-verification on the actual Railway (Linux) deploy.
+- [x] 🖐️ A deliberately-hung task (e.g. point at a URL that never resolves) gets
       force-failed with `failureClass: 'TIMEOUT'` at `TASK_DEADLINE_MS`, and the
-      next queued task picks up normally afterward (queue isn't stuck)
-- [ ] 🤖 **SSRF regression**: `isBlockedIp()` against the 18 known addresses (AWS/GCP
+      next queued task picks up normally afterward (queue isn't stuck) — tested with
+      a real network hang (a `*.greenhouse.io` hostname via nip.io wildcard DNS
+      resolving to a public TEST-NET blackhole address, no local system changes
+      needed) and a temporarily-shortened deadline (`TASK_DEADLINE_MS_OVERRIDE`, new
+      dev-only env var, unset in every real deployment): force-failed at the deadline,
+      next task started 4s later — confirmed not stuck
+- [x] 🤖 **SSRF regression**: `isBlockedIp()` against the 18 known addresses (AWS/GCP
       metadata `169.254.169.254`, loopback, RFC1918 boundaries incl. `172.16.0.0`/
       `172.31.255.255`/`172.32.0.0`, CGNAT, public IPv4/IPv6, the IPv4-mapped-IPv6
       bypass case `::ffff:169.254.169.254`) — all must classify correctly
-- [ ] 🖐️ Confirm the SSRF guard does NOT over-block: a real navigation to
-      `boards.greenhouse.io` (or another legitimate ATS host) succeeds normally
-- [ ] 🖐️ **`maxStalledCount: 0` regression**: `kill -9` the apply-bot process mid-task,
+- [x] 🖐️ Confirm the SSRF guard does NOT over-block: a real navigation to
+      `boards.greenhouse.io` (or another legitimate ATS host) succeeds normally —
+      confirmed twice (standalone script and the real worker run above), page loaded
+      and returned its real title
+- [x] 🖐️ **`maxStalledCount: 0` regression**: `kill -9` the apply-bot process mid-task,
       restart it, confirm the interrupted task is NOT silently auto-reprocessed by
-      BullMQ (should sit at `running` until the sweep — F2 — resolves it)
+      BullMQ (should sit at `running` until the sweep — F2 — resolves it) — confirmed
+      via the DB row (unchanged `startedAt`, still `running` after restart) AND via
+      BullMQ's own log ("job stalled more than allowable limit" — failed at the
+      queue level rather than silently redelivered, exactly per `maxStalledCount: 0`)
 
 ## F4 — Lever Adapter (Browser Automation)
 

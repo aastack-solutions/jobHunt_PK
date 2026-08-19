@@ -1,13 +1,20 @@
 // F10 — captchaDetector.js's looksLikeLoginPage() (and detectCaptcha/
 // detectEmailVerification once F7 fills those in) against fixture pages.
-// SKIPPED: same reason as fieldTaxonomy.test.js — these functions take a real
-// Playwright `page` object; not runnable without Playwright actually installed.
+// Un-skipped 2026-08-19 (F3 verification session) — see fieldTaxonomy.test.js's
+// comment for why `playwright` is still required lazily inside each test body.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-// `playwright` is required lazily, inside each test body below, not here — see
-// fieldTaxonomy.test.js's comment for why (skip only skips the test body, not
-// module-level requires, and playwright isn't installed yet in this environment).
 const { looksLikeLoginPage } = require('../src/engine/captchaDetector');
+
+function playwrightAvailable() {
+  try {
+    require.resolve('playwright');
+    return true;
+  } catch {
+    return false;
+  }
+}
+const skipReason = playwrightAvailable() ? false : 'requires Playwright to be installed (npm install + npx playwright install chromium)';
 
 const LOGIN_PAGE_HTML = `
 <!doctype html><html><body>
@@ -29,7 +36,7 @@ const APPLICATION_FORM_HTML = `
 </body></html>`;
 
 test('looksLikeLoginPage: true for a password field with no file upload',
-  { skip: 'requires a real Playwright browser — not installed in this environment yet' },
+  { skip: skipReason },
   async () => {
     const { chromium } = require('playwright');
     const browser = await chromium.launch();
@@ -41,7 +48,7 @@ test('looksLikeLoginPage: true for a password field with no file upload',
 );
 
 test('looksLikeLoginPage: false for a real application form (has a file upload)',
-  { skip: 'requires a real Playwright browser — not installed in this environment yet' },
+  { skip: skipReason },
   async () => {
     const { chromium } = require('playwright');
     const browser = await chromium.launch();

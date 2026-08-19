@@ -35,7 +35,7 @@ touching what.
 |---|---------|--------|-------|-------|
 | F1 | Data model & credential encryption | ✅ Done, verified | Claude (session) | Verified 2026-08-18 against real Neon Postgres — all 7 test-plan items pass; one real bug found & fixed (sessionStateIv/authTag not cleared on credential update) |
 | F2 | Backend orchestration API (claim/callback/select) | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon+Upstash — all 10 test-plan items pass; found & fixed a real bug (bullConnection.js dropped TLS for rediss:// — hung every BullMQ queue, not just this one) |
-| F3 | apply-bot service scaffold & worker runtime | ✅ Built, ⚠️ untested | — | `npm install` / Playwright browser install never run; SSRF guard, task deadline, graceful shutdown, retry-safe backendApi added 2026-08-17 |
+| F3 | apply-bot service scaffold & worker runtime | ✅ Done, verified (2 items env-blocked) | Claude (session) | Verified 2026-08-19 locally (no Docker) — full worker pipeline, TIMEOUT deadline, maxStalledCount:0 all confirmed live; docker build (no Docker) and real SIGTERM delivery (Windows limitation) need the actual Railway deploy |
 | F4 | Lever adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | **Correction 2026-08-17**: no API shortcut exists (Lever's apply endpoint also needs an employer-owned key) — same posture as F5/F6, `leverAdapter.js` already built in Phase 1 |
 | F5 | Greenhouse adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA is the expected common case, not an edge case; login-page detection now automatic |
 | F6 | Ashby adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA presence unconfirmed by research; login-page detection now automatic |
@@ -53,6 +53,74 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F3 verified end-to-end on local Windows dev (no Docker); two items genuinely env-blocked
+Branch: `f3-apply-bot-service-scaffold` (branched from `master` after merging F2 in).
+
+**Bumped the stale Playwright pin** (`1.49.1` → `1.62.1`, current stable per `npm
+view playwright version`) before installing — matches the plan's own flagged risk
+(see the 2026-08-17 entry above, now resolved). `npm install` + `npx playwright
+install chromium` both completed clean; resolved Chromium 151.0.7922.34.
+
+**Same TLS bug as F2, found in the mirrored copy**: `backend/apply-bot/src/bullConnection.js`
+had the identical missing-`tls`-for-`rediss://` bug as the backend's copy (fixed in
+F2) — makes sense, it's a deliberate mirror ("own copy for the same reason as
+logger.js"), so the bug was mirrored too. Fixed identically.
+
+**Full worker pipeline verified live**: seeded a real `ApplyTask` via the backend
+(pointing at `https://www.greenhouse.io/`, not a fake URL) and enqueued it on the
+real `apply-bot-tasks` queue — the apply-bot worker claimed it via the real
+`GET /api/internal/apply-bot/tasks/:id`, launched a real headless Chromium, navigated
+to the real page, scanned it with `fieldTaxonomy.js`, correctly abstained
+(`skipped_low_confidence` — the homepage isn't an application form, so this is the
+*correct* outcome, not a failure), and reported back via the real callback — the
+entire F1→F2→F3 chain working together end to end, not three features individually
+mocked. ~66s round trip (Chromium's first cold launch on this machine appears to be
+the dominant cost, not navigation).
+
+**`TASK_DEADLINE_MS` (TIMEOUT) verified with a real network hang, no system changes
+needed**: used `<anything>.greenhouse.io.<ip-dashes>.nip.io` (nip.io is a public
+wildcard-DNS test service — any hostname ending in `<ip-dashes>.nip.io` resolves to
+that IP) pointed at `203.0.113.1` (TEST-NET-3, IANA-documented public-but-blackholed,
+so it hangs on connect rather than erroring immediately, and — unlike an RFC1918
+address — isn't rejected by our own SSRF guard, which is exactly what made it usable
+for this test). Added a new dev-only `TASK_DEADLINE_MS_OVERRIDE` env var to
+`worker.js` (unset in every real deployment — production always uses the real 3
+minutes) so the mechanism could be tested in seconds: force-failed the hung task at
+the deadline with `failureClass: 'TIMEOUT'`, and confirmed the next queued task
+started just 4 seconds later — the concurrency:1 queue was never stuck.
+
+**`maxStalledCount: 0` verified via a real crash simulation**: seeded a task,
+waited for it to reach `running`, `taskkill /F` (Windows' SIGKILL-equivalent) the
+apply-bot process mid-flight, restarted it, and confirmed the `ApplyTask` row was
+untouched (`status: 'running'`, unchanged `startedAt`) rather than silently
+reprocessed — BullMQ's own log even confirmed the mechanism explicitly ("job
+stalled more than allowable limit" logged as a failure at the queue level, not a
+silent redelivery), matching `worker.js`'s own comment on why this flag exists.
+
+**Two items genuinely blocked by this environment, not skipped carelessly**:
+1. **`docker build`** — no Docker installed on this machine (confirmed, matches the
+   PostgreSQL/Memurai install friction noted in F1's entry — this dev machine has
+   real limits on what can be installed). Not attempted; the Dockerfile was reviewed
+   and its two RUN steps match what was just verified working natively (`npm ci` +
+   `npx playwright install --with-deps chromium`), so there's reasonable but not
+   proven confidence it'll build. **Needs an actual Docker build before trusting the
+   Railway deploy path.**
+2. **Real `SIGTERM` graceful-shutdown delivery** — two independent attempts to
+   deliver a signal cross-process on Windows both failed silently: `taskkill`
+   without `/F` is refused outright by Windows ("can only be terminated forcefully"),
+   and `process.kill(pid, 'SIGTERM')` / `process.kill(pid, 'SIGINT')` from a separate
+   Node process both force-killed the target with zero shutdown-handler log output —
+   a known Node-on-Windows limitation (cross-process signal delivery isn't reliably
+   emulated the way it is on POSIX). Verified the *code* is correct by inspection
+   (`server.js` registers both signals against a shared `shutdown()` that correctly
+   awaits `worker.close()` before exiting) but this specific behavior needs
+   verification against the real Railway (Linux) deployment, where SIGTERM is a
+   first-class signal, to be trusted operationally.
+
+**Why**: same bar as F1/F2 — real evidence wherever the environment allows it,
+and an honestly-labeled gap (with the reason and what would close it) wherever it
+doesn't, rather than a checkbox that looks the same either way.
 
 ### 2026-08-19 — F2 verified end-to-end; found and fixed a bug affecting every BullMQ queue, not just apply-bot
 Branch: `f2-backend-orchestration-api` (branched from `master` *after* merging F1 in,
@@ -257,6 +325,9 @@ releases.
 for details. Not yet done as of this entry.
 **Why**: avoids building/testing against an outdated Playwright version when a
 newer one is trivially available and still Node-22-compatible.
+**Done 2026-08-19 (F3 verification session)**: bumped to `1.62.1` (confirmed still
+current via `npm view playwright version`), `npm install` + `npx playwright install
+chromium` both clean, resolved Chromium 151.0.7922.34 — see F3's entry below.
 
 ### 2026-08-17 — Security pass: 4 findings fixed, 3 documented as already-handled or deferred
 Full write-up in `docs/apply-bot/TECHNICAL_PLAN.md`'s "Security Findings & Fixes"

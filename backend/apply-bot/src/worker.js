@@ -45,7 +45,13 @@ function clearPausedSession(applyTaskId) {
 // selector that's genuinely never coming) would block every other queued task
 // indefinitely. This is the outer safety net, not a replacement for the per-call
 // timeouts already in place.
-const TASK_DEADLINE_MS = 3 * 60 * 1000;
+// TASK_DEADLINE_MS_OVERRIDE (added 2026-08-19, F3 verification session): lets a
+// real 3-minute wait be replaced with seconds when testing this specific mechanism
+// (see docs/apply-bot/TEST_PLAN.md F3) without touching production behavior —
+// unset in every real deployment, where this is always exactly 3 minutes.
+const TASK_DEADLINE_MS = process.env.TASK_DEADLINE_MS_OVERRIDE
+  ? parseInt(process.env.TASK_DEADLINE_MS_OVERRIDE, 10)
+  : 3 * 60 * 1000;
 
 async function downloadResumeBuffer(url) {
   if (!url) return null;

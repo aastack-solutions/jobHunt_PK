@@ -34,7 +34,7 @@ touching what.
 | # | Feature | Status | Owner | Notes |
 |---|---------|--------|-------|-------|
 | F1 | Data model & credential encryption | ✅ Done, verified | Claude (session) | Verified 2026-08-18 against real Neon Postgres — all 7 test-plan items pass; one real bug found & fixed (sessionStateIv/authTag not cleared on credential update) |
-| F2 | Backend orchestration API (claim/callback/select) | ✅ Built, ⚠️ untested | — | Timing-safe secret comparison, internal rate limiter, callback idempotency guard fixed 2026-08-17 |
+| F2 | Backend orchestration API (claim/callback/select) | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon+Upstash — all 10 test-plan items pass; found & fixed a real bug (bullConnection.js dropped TLS for rediss:// — hung every BullMQ queue, not just this one) |
 | F3 | apply-bot service scaffold & worker runtime | ✅ Built, ⚠️ untested | — | `npm install` / Playwright browser install never run; SSRF guard, task deadline, graceful shutdown, retry-safe backendApi added 2026-08-17 |
 | F4 | Lever adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | **Correction 2026-08-17**: no API shortcut exists (Lever's apply endpoint also needs an employer-owned key) — same posture as F5/F6, `leverAdapter.js` already built in Phase 1 |
 | F5 | Greenhouse adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA is the expected common case, not an edge case; login-page detection now automatic |
@@ -42,7 +42,7 @@ touching what.
 | F7 | CAPTCHA / bot-challenge live-view | 🔴 Not started | Unassigned | Scope grew: must also cover email-verification challenges AND make TASK_DEADLINE_MS pause-aware (see Decisions Log 2026-08-17) |
 | F8 | Generic engine (non-ATS sources) | 🔴 Not started, gated off | Unassigned | `APPLY_BOT_GENERIC_ENABLED=false` — don't enable until built |
 | F9 | Failure measurement & alerting | 🟡 Partially built | Unassigned | Staleness/needs-review dashboard alerting done 2026-08-17; per-adapter success-rate reporting still open |
-| F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 37 automated tests passing (`npm test`, Node's built-in runner, zero new deps) covering everything browser-free/DB-free; remaining items blocked on a live DB or real Playwright install |
+| F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 43 automated tests passing, 3 skipped (Playwright-only) as of 2026-08-19 — DB-dependent sweep/callback tests un-skipped and made real during F2 verification; remaining items need a real Playwright install |
 | F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
 | F12 | Live-mode rollout & safety ops | 🔴 Blocked on F5/F6/F9/F10 | Unassigned | Now also requires: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17) |
 | F13 | Unified application tracking (source, resume link, ghosted) | ✅ Built, ⚠️ untested | — | Closes the pre-existing "Apply button doesn't track" gap too — see Decisions Log 2026-08-17 |
@@ -53,6 +53,53 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F2 verified end-to-end; found and fixed a bug affecting every BullMQ queue, not just apply-bot
+Branch: `f2-backend-orchestration-api` (branched from `master` *after* merging F1 in,
+so each ticket branch stacks cleanly rather than losing the previous ticket's work —
+correcting a mistake made when this branch was first cut off pre-F1 `master`).
+
+**Bug found and fixed — `backend/src/queues/bullConnection.js` dropped TLS for
+`rediss://` URLs.** The function hand-builds an ioredis connection object from
+`REDIS_URL` (host/port/username/password) but never inspected `url.protocol`, so a
+`rediss://` URL (Upstash, and any other TLS-only managed Redis) silently connected
+over plain TCP instead — which doesn't error, it just hangs the TCP handshake
+forever. Confirmed directly: `applyBotQueue.add()` hung indefinitely before the fix,
+completed instantly after adding `tls: u.protocol === 'rediss:' ? {} : undefined`.
+**This isn't apply-bot-specific** — `aiQueue.js` and `schedulerQueue.js` share the
+same `bullConnection()` helper, so this was silently breaking the AI-generation
+queue and the scheduler's repeatable jobs too, on any TLS-Redis deployment. Confirmed
+node-redis (`src/redis.js`, used for sessions/kill-switch) was unaffected — it
+receives the URL string directly and parses the scheme itself, so only the
+hand-rolled BullMQ path had the bug.
+
+**All 10 F2 test-plan items verified** against real Neon Postgres + Upstash Redis
+(`docs/apply-bot/TEST_PLAN.md` checked off): trigger-select auth (missing/wrong
+secret → 401), daily-cap enforcement (seeded 2 eligible jobs, capped at 1, confirmed
+exactly 1 task created), kill-switch-off behavior (sweep still runs, zero tasks),
+run-twice dedupe (0 new tasks second time), company-level dedupe (a job at a company
+with an existing `Application` is skipped even as a never-seen posting), the claim
+endpoint (decrypted credential matches what F1 stored, status flips to `running`,
+idempotent re-claim), and the callback path (submitted → `Application` created with
+correct `source`/`resumeId`/`applyUrl`, `ApplyTask.applicationId` backfilled;
+duplicate/stale callback on a terminal task → `alreadyTerminal: true`, no double
+`Application`, no downgrade). Also verified `internalLimiter` isolation directly:
+hammered `/api/jobs` past its 100/min public limit (confirmed via 10 real 429s),
+`trigger-select` still returned 200 immediately after.
+
+**Turned manual verification into permanent tests**: `backend/test/applyBotSweep.test.js`
+and `backend/test/applyTaskCallback.test.js` were placeholder `assert.ok(true)`
+stubs skipped for lack of a DB (per F10's original scope). Both un-skipped and
+actually implemented — real fixture rows via Prisma, real HTTP calls to a running
+backend, self-skipping gracefully (not failing) when `DATABASE_URL` or a reachable
+backend isn't present, so `npm test` still passes clean in a DB-less checkout.
+`package.json`'s `test` script now preloads `dotenv/config` so these pick up a local
+`.env` automatically. Full suite: 43 passing, 3 skipped (Playwright-only), 0 failing.
+**Why**: same standard as F1 — a ticket is "done" when there's real evidence from
+every angle that doesn't need a destructive op, not just a written implementation.
+Fixing the TLS bug here rather than deferring it to F3 (where it would have looked
+like a Playwright/worker problem, not a queue-connection one) saves real debugging
+time later — it would have manifested identically inside the apply-bot worker.
 
 ### 2026-08-18 — F1 verified end-to-end against a real database; one real bug found and fixed
 Working the F1-F14 ticket list one at a time (user's explicit workflow: one ticket per

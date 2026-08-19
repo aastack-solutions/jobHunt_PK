@@ -36,31 +36,36 @@ these can't be automated away and shouldn't be skipped just because they're slow
 
 ## F2 — Backend Orchestration API
 
-- [ ] 🖐️ `POST /api/internal/apply-bot/trigger-select` with the correct
+**Verified 2026-08-19 against a real Neon Postgres + Upstash Redis — see MEMORY.md.**
+
+- [x] 🖐️ `POST /api/internal/apply-bot/trigger-select` with the correct
       `X-Cron-Secret` → 200, creates `ApplyTask` rows respecting `APPLY_BOT_DAILY_CAP`
-- [ ] 🤖 Same request with a wrong or missing secret header → 401
-- [ ] 🖐️ Kill switch off (`apply_bot:enabled` = `false` in Redis) → response shows
+      (verified both the normal case and cap=1 against 2 eligible jobs)
+- [x] 🤖 Same request with a wrong or missing secret header → 401
+- [x] 🖐️ Kill switch off (`apply_bot:enabled` = `false` in Redis) → response shows
       `enabled: false`, zero tasks created, but the sweep still ran (`swept` in the
       response is populated, not skipped)
-- [ ] 🖐️ Run selection twice back-to-back with nothing having progressed — second
+- [x] 🖐️ Run selection twice back-to-back with nothing having progressed — second
       run creates zero new tasks for jobs already `queued`/`running`/etc. (dedupe)
-- [ ] 🖐️ A job at a company the user already has an `Application` for (within 90
+- [x] 🖐️ A job at a company the user already has an `Application` for (within 90
       days) is skipped even if it's a different specific job posting
-- [ ] 🖐️ `GET /api/internal/apply-bot/tasks/:id` with the correct
+- [x] 🖐️ `GET /api/internal/apply-bot/tasks/:id` with the correct
       `X-Apply-Bot-Secret` → 200, decrypted credential matches what was stored,
       task flips to `status: 'running'`
-- [ ] 🖐️ Calling the claim endpoint twice for the same task doesn't error or corrupt
+- [x] 🖐️ Calling the claim endpoint twice for the same task doesn't error or corrupt
       state (idempotent re-claim)
-- [ ] 🤖 **Idempotency regression**: `POST` a `submitted` callback for a task, then
+- [x] 🤖 **Idempotency regression**: `POST` a `submitted` callback for a task, then
       `POST` a `failed` callback for the *same, now-terminal* task — confirm the
       second call returns `alreadyTerminal: true` and does NOT change the task's
-      status, and does NOT create a second `Application` row
-- [ ] 🖐️ A `submitted` callback creates an `Application` with correct
+      status, and does NOT create a second `Application` row — now a permanent
+      automated test, `test/applyTaskCallback.test.js` (un-skipped)
+- [x] 🖐️ A `submitted` callback creates an `Application` with correct
       `source: 'auto_apply_bot'`, `resumeId`, and `applyUrl`, and backfills
       `ApplyTask.applicationId` to point at it
-- [ ] 🖐️ Hammer `/api/jobs` (public) past its rate limit, then immediately hit
+- [x] 🖐️ Hammer `/api/jobs` (public) past its rate limit, then immediately hit
       `/api/internal/apply-bot/trigger-select` — confirm the internal call is NOT
-      429'd by the public bucket (separate `internalLimiter`)
+      429'd by the public bucket (separate `internalLimiter`) — confirmed: 100
+      requests passed then 429s started, `trigger-select` still returned 200
 
 ## F3 — apply-bot Service Scaffold & Worker Runtime
 
@@ -194,8 +199,10 @@ F5/F6, not an API-payload test.
 
 ## F10 — Testing & Verification Harness
 
-- [x] 🤖 `npm test` exists and runs in under a minute — `node --test`, both
-      `backend/` and `backend/apply-bot/`, 37 tests passing as of 2026-08-17
+- [x] 🤖 `npm test` exists and runs in under a minute — `node -r dotenv/config --test`
+      (dotenv preload added 2026-08-19 so DB-dependent tests pick up `.env`
+      automatically when present), both `backend/` and `backend/apply-bot/`,
+      43 tests passing / 3 skipped (Playwright-only) as of 2026-08-19
 - [x] 🤖 `cryptoService` round trip (incl. tampered-ciphertext and wrong-iv/authTag
       cases) — `backend/test/cryptoService.test.js`
 - [x] 🤖 `applyBotPlatform.resolvePlatform`/`requiresCredential` against real
@@ -205,8 +212,11 @@ F5/F6, not an API-payload test.
 - [x] 🤖 `adapters/index.js`'s `resolveAdapter()` against real ATS URLs, plus a
       guard confirming every registered adapter is currently browser-based —
       `backend/apply-bot/test/adapters.test.js`
-- [ ] 🤖 **Blocked on a live database**: the callback idempotency guard,
-      `applyBotSweep`'s staleness thresholds
+- [x] 🤖 **Un-skipped 2026-08-19** (F2 verification session, real Neon DB): the
+      callback idempotency guard (`backend/test/applyTaskCallback.test.js`) and
+      `applyBotSweep`'s staleness thresholds (`backend/test/applyBotSweep.test.js`)
+      — both self-skip gracefully when `DATABASE_URL`/a running backend aren't
+      available, so `npm test` still passes clean in a DB-less environment
 - [ ] 🤖 **Blocked on a real Playwright install**: `fieldTaxonomy.bestMatch` against
       a fixture HTML page, `looksLikeLoginPage` against fixture pages
 

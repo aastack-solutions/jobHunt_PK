@@ -427,8 +427,11 @@ running locally (branch `f9-failure-measurement`).
 - [x] 🤖 `npm test` exists and runs in under a minute — `node -r dotenv/config --test`
       (dotenv preload added 2026-08-19 so DB-dependent tests pick up `.env`
       automatically when present), both `backend/` and `backend/apply-bot/`,
-      47 passing / 3 skipped (Playwright-only) as of 2026-08-19 after F9 added
-      `applyBotFailureReport.test.js` (was 43 passing / 3 skipped before F9)
+      64 passing / 1 skipped / 0 failing as of 2026-08-19 end of day, up from 43
+      total at the start of that day (+5 from F9, +5 from F8b, +11 from F8a/F8c).
+      The single remaining skip is the callback test, which needs a running backend
+      rather than a browser — Playwright is installed now, so the two
+      browser-dependent stubs below actually run
 - [x] 🤖 `cryptoService` round trip (incl. tampered-ciphertext and wrong-iv/authTag
       cases) — `backend/test/cryptoService.test.js`
 - [x] 🤖 `applyBotPlatform.resolvePlatform`/`requiresCredential` against real

@@ -4,12 +4,22 @@
 // below are corroborated (not just guessed) against Lever's own official Postings
 // API docs (github.com/lever/postings-api), which document `name`, `email`, and
 // `resume` as the exact field keys their platform uses end to end — a real primary
-// source, not a typical-convention guess. Still NOT verified against a live
-// posting's actual rendered DOM: two direct fetch attempts against real, current
-// jobs.lever.co postings both returned HTTP 403 (Lever blocks non-browser HTTP
-// requests at the network layer), so this needs a real Playwright browser session
-// to confirm — a raw fetch cannot substitute for one here. See
-// docs/apply-bot/TEST_PLAN.md's F4 checklist for the remaining manual verification.
+// source, not a typical-convention guess.
+//
+// **Verified 2026-08-19 (F4) against 5 real, currently-open postings** (Palantir,
+// Apollo Research, Veeva, H1, Velo3D — see docs/apply-bot/TEST_PLAN.md F4 and
+// MEMORY.md for the full session): `name`/`email`/`resume` selectors match exactly
+// as documented — confirmed by both `fillApplication()`'s own return value and an
+// independent DOM read of the actual field values/file count after fill, plus
+// before/after screenshots. All 5 were guest-apply (no login), confirming `login()`
+// as a correct no-op — no gated board found. All 5 also rendered a real hCaptcha
+// widget (`.h-captcha` + iframe + hidden `h-captcha-response` input) — this
+// resolves the previously-open "does Lever present a CAPTCHA?" question: yes,
+// apparently as standard, not an edge case, same posture as Greenhouse (see F5).
+// Two real bugs found and fixed during this verification: `locateSubmit()` below
+// (targeted a selector that matches neither of Lever's two submit-shaped buttons),
+// and `captchaDetector.js`'s `isAlreadySolved()` (checked for a `<textarea>`
+// response element; Lever's real hCaptcha integration uses `<input type="hidden">`).
 //
 // Also confirmed via the same API docs: `comments` is a real, documented free-text
 // field ("additional candidate information") — a plausible cover-letter target this
@@ -68,8 +78,15 @@ async function fillApplication(page, profile) {
   return { fieldsFilled, confidence: requiredOk ? 90 : 40 };
 }
 
+// Verified 2026-08-19 against 5 real, currently-open postings (see
+// docs/apply-bot/TEST_PLAN.md F4): Lever's real DOM has TWO submit-shaped buttons —
+// a `button[type="submit"]` with NO text (the form's real submit, triggered
+// programmatically after hCaptcha validates) and a *visible*
+// `button[type="button"]` reading "Submit application" that's the one an actual
+// applicant clicks. The old selector (`button[type="submit"]:has-text("Submit")`)
+// matches neither and would have silently found nothing in live mode.
 function locateSubmit(page) {
-  return page.locator('button[type="submit"]:has-text("Submit")').first();
+  return page.locator('button:has-text("Submit application")').first();
 }
 
 module.exports = { platform: 'lever', matches, login, fillApplication, locateSubmit, detectCaptcha };

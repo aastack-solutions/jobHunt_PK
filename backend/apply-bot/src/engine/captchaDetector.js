@@ -16,14 +16,22 @@ const IMAGE_SELECTORS = ['img[alt*="captcha" i]', 'img[src*="captcha"]'];
 const TEXT_PATTERNS = ['verify you are human', 'prove you are not a robot', 'security check'];
 
 async function isAlreadySolved(page) {
-  // If a solved-response textarea already has a value, the widget rendered but the
+  // If a solved-response field already has a value, the widget rendered but the
   // challenge is done — don't treat it as a fresh detection (this is the ProBot
   // detail most worth copying: without it, an already-solved captcha the page
   // hasn't navigated past yet looks identical to an unsolved one).
+  //
+  // The response element's tag varies by integration: reCAPTCHA typically renders
+  // it as a <textarea>, but Lever's real hCaptcha integration (confirmed 2026-08-19
+  // against 5 real postings — see docs/apply-bot/TEST_PLAN.md F4) uses a plain
+  // <input type="hidden">. The original textarea-only selector never matched
+  // Lever's DOM at all, so this check silently always returned "not solved" there —
+  // safe-direction (never under-reports a real captcha) but wrong, so fixed to
+  // check both tags via the attribute selector alone (matches either).
   const solved = await page
     .evaluate(() => {
-      const g = document.querySelector('textarea[name="g-recaptcha-response"]');
-      const h = document.querySelector('textarea[name="h-captcha-response"]');
+      const g = document.querySelector('[name="g-recaptcha-response"]');
+      const h = document.querySelector('[name="h-captcha-response"]');
       const gOk = !g || g.value.trim().length > 0;
       const hOk = !h || h.value.trim().length > 0;
       return (g || h) ? (gOk && hOk) : null; // null = neither widget present

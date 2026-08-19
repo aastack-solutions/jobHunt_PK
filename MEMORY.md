@@ -36,7 +36,7 @@ touching what.
 | F1 | Data model & credential encryption | ✅ Done, verified | Claude (session) | Verified 2026-08-18 against real Neon Postgres — all 7 test-plan items pass; one real bug found & fixed (sessionStateIv/authTag not cleared on credential update) |
 | F2 | Backend orchestration API (claim/callback/select) | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon+Upstash — all 10 test-plan items pass; found & fixed a real bug (bullConnection.js dropped TLS for rediss:// — hung every BullMQ queue, not just this one) |
 | F3 | apply-bot service scaffold & worker runtime | ✅ Done, verified (2 items env-blocked) | Claude (session) | Verified 2026-08-19 locally (no Docker) — full worker pipeline, TIMEOUT deadline, maxStalledCount:0 all confirmed live; docker build (no Docker) and real SIGTERM delivery (Windows limitation) need the actual Railway deploy |
-| F4 | Lever adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | **Correction 2026-08-17**: no API shortcut exists (Lever's apply endpoint also needs an employer-owned key) — same posture as F5/F6, `leverAdapter.js` already built in Phase 1 |
+| F4 | Lever adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — name/email/resume selectors confirmed correct, CAPTCHA (hCaptcha) confirmed present on all 5 (resolves prior open question), 2 real bugs found & fixed (locateSubmit selector, isAlreadySolved textarea-vs-input check) |
 | F5 | Greenhouse adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA is the expected common case, not an edge case; login-page detection now automatic |
 | F6 | Ashby adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA presence unconfirmed by research; login-page detection now automatic |
 | F7 | CAPTCHA / bot-challenge live-view | 🔴 Not started | Unassigned | Scope grew: must also cover email-verification challenges AND make TASK_DEADLINE_MS pause-aware (see Decisions Log 2026-08-17) |
@@ -53,6 +53,83 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F4 verified against 5 real live Lever postings; CAPTCHA question resolved, 2 real bugs fixed
+Branch: `f4-lever-adapter` (branched from `master` after merging F3 in).
+**Process note**: the branch was first cut from a stale point (F1 only, missing F2
+and F3) due to a branching mistake — caught via `git log` showing only 1 commit
+where 3 were expected, before anything was committed on the bad branch. Fixed by
+switching to the verified `master` (uncommitted F4 edits carried over cleanly,
+since neither F2 nor F3 had touched the two files this session was editing),
+deleting the bad branch, and recreating it from the correct base. Flagging this
+here as a reminder for the next ticket: verify `git log --oneline -3` right after
+every `git checkout -b`, not just after the preceding merge.
+
+Since a direct HTTP fetch against `jobs.lever.co` returns 403 (Lever blocks
+non-browser requests — confirmed in an earlier session, see the 2026-08-17 entry
+below), real-DOM verification required an actual Playwright session, now possible
+since F3 installed Chromium locally. Found 5 real, currently-open postings via web
+search (2 others from the same search — Loop, Berkshire Hathaway Homestate — had
+already closed/404'd by the time they were checked, a reminder that search results
+for live job postings go stale fast): **Palantir, Apollo Research, Veeva, H1,
+Velo3D**.
+
+**Selectors confirmed correct as-is**: `input[name="name"]`, `input[name="email"]`,
+`input[name="resume"]` matched exactly on all 5 real postings — the API-docs-based
+corroboration from the 2026-08-17 entry held up against real DOM. Verified two
+independent ways per posting: the adapter's own `fillApplication()` return value,
+and a separate direct read of the actual DOM field values/file count afterward
+(not just trusting the adapter's self-report) — plus before/after screenshots (one
+visually inspected: resume filename shown, "Analyzing resume..." spinner active
+confirming a real client-side upload was triggered, name/email both populated).
+
+**CAPTCHA question resolved — yes, standard, not an edge case**: all 5 postings
+render a real hCaptcha widget (`.h-captcha` div + iframe + hidden
+`h-captcha-response` input + hCaptcha script tag, confirmed via direct DOM
+inspection). This means the full worker pipeline (which checks `detectCaptcha()`
+*before* calling `fillApplication()`) will hit a CAPTCHA failure on essentially
+every real Lever posting in Phase 1 — same posture F5 already documented for
+Greenhouse. Practical consequence for testing this feature: the selector
+verification above was done by calling `leverAdapter.fillApplication()` directly
+against the real page (bypassing the worker's pre-fill CAPTCHA gate on purpose) —
+this is what F4 actually needs verified (the DOM-matching logic), separately from
+F7's CAPTCHA hand-off, which is what actually unblocks the full pipeline later.
+
+**Two real bugs found and fixed**:
+1. `leverAdapter.js`'s `locateSubmit()` targeted
+   `button[type="submit"]:has-text("Submit")` — Lever's real DOM has *two*
+   submit-shaped buttons: an actual `button[type="submit"]` with no text at all
+   (triggered programmatically after hCaptcha validates) and a visible
+   `button[type="button"]` reading "Submit application" that's the one a real
+   applicant clicks. The old selector matched neither — confirmed empty on both
+   test postings before the fix. Fixed to `button:has-text("Submit application")`,
+   confirmed matching exactly 1 element afterward.
+2. `captchaDetector.js`'s `isAlreadySolved()` checked
+   `textarea[name="h-captcha-response"]` — Lever's real hCaptcha integration uses
+   `input[type="hidden"]`, not a textarea, so this check could never have found it
+   (always fell through to the "neither widget present" branch for Lever
+   specifically). Safe-direction bug (never *under*-reports a genuine CAPTCHA,
+   since `detectCaptcha()`'s widget-selector check runs first and independently
+   catches `.h-captcha`), but wrong — fixed to match on the attribute selector
+   alone (`[name="h-captcha-response"]`), which matches either tag.
+
+**Confirmed guest-apply across all 5**: no login required on any tested posting,
+`login()`'s no-op is correct, no gated board found to test the AUTH-failure path
+against for real (the generic `looksLikeLoginPage()` mechanism itself is
+fixture-tested and passing — see F10 — just not exercised against a real gated
+Lever board in this session).
+
+**Deliberately not done**: live-mode submission (actually clicking "Submit
+application" on a real posting) — that's F12's gate, not F4's; every test here used
+`fillApplication()` directly or shadow mode, which stops one click before Submit.
+No real application was ever submitted to any of the 5 employers tested against.
+
+**Why**: same bar as F1-F3 — real evidence against real live third-party systems
+wherever safely possible (shadow-only, small number of postings, no actual
+applications submitted), a documented catch-and-fix for the branching mistake
+rather than a silent redo, and two real production bugs caught before they'd have
+surfaced as a confusing failure the first time someone actually watched a live
+CAPTCHA hand-off try to click a submit button that didn't exist.
 
 ### 2026-08-19 — F3 verified end-to-end on local Windows dev (no Docker); two items genuinely env-blocked
 Branch: `f3-apply-bot-service-scaffold` (branched from `master` after merging F2 in).
@@ -497,6 +574,12 @@ first time someone actually fills in a TODO.
 - Whether to add `phone`/`linkedinUrl`/`portfolioUrl` fields to `User` (schema
   change, needs explicit sign-off) vs. accepting that ATS forms requiring phone will
   always abstain. See `docs/apply-bot/01-research-plan.md` §D. **Unresolved.**
+  **New evidence, 2026-08-19 (F4)**: on 2 of the 5 real Lever postings tested
+  (H1, Velo3D), "Phone" and "LinkedIn URL" were both marked required (a "✱" in the
+  field's label) and correctly recorded as `unmapped` rather than guessed — this is
+  a real, not hypothetical, cost of leaving this unresolved: those 2 postings would
+  abstain (or at minimum get a lower confidence score) purely for missing a phone
+  number, on an otherwise cleanly-filled form.
 - Hosting choice for `apply-bot` (Railway in-container vs. Browserbase/Browserless
   vs. VPS) — left open in the original plan pending real volume data. Browserbase
   pricing researched 2026-08-17 (Developer tier $20/mo, 25 concurrent browsers, 100

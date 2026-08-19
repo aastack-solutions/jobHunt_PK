@@ -127,21 +127,47 @@ invoking its handler) — both need the real Railway Linux deployment to test fo
 needs an employer-owned API key) — this is browser automation, same test shape as
 F5/F6, not an API-payload test.
 
-- [ ] 🖐️ A real, currently-open `jobs.lever.co` posting's `applyUrl` resolves to
-      `adapterUsed: 'lever'` via `resolveAdapter()`
-- [ ] 🖐️ Against 3+ different real, currently-open Lever postings, shadow mode
+**Verified 2026-08-19 against 5 real, currently-open postings — see MEMORY.md.**
+
+- [x] 🖐️ A real, currently-open `jobs.lever.co` posting's `applyUrl` resolves to
+      `adapterUsed: 'lever'` via `resolveAdapter()` — confirmed for all 5 postings
+      tested below
+- [x] 🖐️ Against 3+ different real, currently-open Lever postings, shadow mode
       correctly fills name / email / resume upload — verify against the captured
-      screenshots, not just the `fieldsFilled` JSON
-- [ ] 🖐️ Resume file attaches correctly via the real DOM's file input
-      (`input[name="resume"]` — confirm this selector against a live posting)
-- [ ] 🖐️ Confirm Lever postings are guest-apply (no login) across the real postings
-      tested — `login()` should be a correct no-op; flag if a gated board is found
-- [ ] 🖐️ Login-page regression (same as F5): an expired/invalid stored session
-      correctly triggers `failureClass: 'AUTH'` via `looksLikeLoginPage()`
-- [ ] 🖐️ Record whether any tested Lever posting presents a CAPTCHA — not confirmed
-      either way by research; this is the test that answers it
+      screenshots, not just the `fieldsFilled` JSON — tested against **5** (Palantir,
+      Apollo Research, Veeva, H1, Velo3D), each cross-checked two ways: the
+      adapter's own `fieldsFilled`/`confidence` return value AND an independent
+      post-fill DOM read of the actual input values/file count (not just trusting
+      the adapter's self-report), plus before/after screenshots (one visually
+      inspected directly — resume filename + "Analyzing resume..." spinner +
+      name/email all correctly populated)
+- [x] 🖐️ Resume file attaches correctly via the real DOM's file input
+      (`input[name="resume"]` — confirm this selector against a live posting) —
+      confirmed exact match, `resumeFileCount: 1` after fill on all 5 postings
+- [x] 🖐️ Confirm Lever postings are guest-apply (no login) across the real postings
+      tested — `login()` should be a correct no-op; flag if a gated board is found —
+      confirmed on all 5, no gated board found
+- [x] 🖐️ Login-page regression (same as F5): an expired/invalid stored session
+      correctly triggers `failureClass: 'AUTH'` via `looksLikeLoginPage()` — the
+      generic mechanism (fixture-tested, F10) now passes for real with Playwright
+      installed; additionally confirmed directly against real Lever DOM
+      (`looksLikeLoginPage()` correctly returns `false` — not a false positive)
+- [x] 🖐️ Record whether any tested Lever posting presents a CAPTCHA — not confirmed
+      either way by research; this is the test that answers it — **confirmed
+      present on all 5**: real hCaptcha widget (`.h-captcha` div, iframe, hidden
+      `h-captcha-response` input, hCaptcha script tag) — Lever presents a CAPTCHA
+      as standard, not an edge case, same posture now confirmed as F5's Greenhouse
 - [ ] 🖐️ (Live mode, only once trusted) a real application submits and a
-      confirmation is verifiable on Lever's/the employer's side
+      confirmation is verifiable on Lever's/the employer's side — **deliberately
+      not attempted**: this is F12's gate (live-mode rollout), not F4's; shadow
+      mode (stops one click before Submit) was used throughout, no real
+      applications were ever submitted to any of these employers
+
+**Two real bugs found and fixed during this verification** (see MEMORY.md for
+detail): `leverAdapter.js`'s `locateSubmit()` matched neither of Lever's two real
+submit-shaped buttons, and `captchaDetector.js`'s `isAlreadySolved()` checked for a
+`<textarea>` response element when Lever's real hCaptcha integration uses
+`<input type="hidden">`.
 
 ## F5 — Greenhouse Adapter
 

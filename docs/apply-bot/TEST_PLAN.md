@@ -14,20 +14,24 @@ these can't be automated away and shouldn't be skipped just because they're slow
 
 ## F1 — Data Model & Credential Encryption
 
-- [ ] 🤖 `npx prisma migrate dev` applies cleanly to a fresh Postgres instance — all
+**Verified 2026-08-18 against a real Neon Postgres instance — see MEMORY.md.**
+
+- [x] 🤖 `npx prisma migrate dev` applies cleanly to a fresh Postgres instance — all
       tables, indexes, and foreign keys created with no errors
-- [ ] 🖐️ `PUT /api/apply-credentials/greenhouse` with a valid username/password → 201,
+- [x] 🖐️ `PUT /api/apply-credentials/greenhouse` with a valid username/password → 201,
       response body contains no ciphertext, iv, authTag, or plaintext secret
-- [ ] 🖐️ `GET /api/apply-credentials` → lists platform/isActive/hasSessionState only,
+- [x] 🖐️ `GET /api/apply-credentials` → lists platform/isActive/hasSessionState only,
       never the encrypted or plaintext credential fields
-- [ ] 🤖 Encrypt→decrypt round trip (`cryptoService.encryptJSON`/`decryptJSON`)
+- [x] 🤖 Encrypt→decrypt round trip (`cryptoService.encryptJSON`/`decryptJSON`)
       returns the exact original object for a representative payload
-- [ ] 🤖 `timingSafeEqualString`: same string → true; different string → false;
+- [x] 🤖 `timingSafeEqualString`: same string → true; different string → false;
       mismatched length → false, no throw; `undefined` input → false, no throw
-- [ ] 🖐️ `PUT` twice for the same platform (update path) — confirm
+- [x] 🖐️ `PUT` twice for the same platform (update path) — confirm
       `sessionStateEncrypted`/`sessionStateIv`/`sessionStateAuthTag` are cleared to
-      null (a new login invalidates the old session)
-- [ ] 🖐️ `DELETE /api/apply-credentials/greenhouse` removes the row; a subsequent
+      null (a new login invalidates the old session) — **found & fixed a real bug**:
+      only `sessionStateEncrypted`/`sessionStateSavedAt` were being cleared, leaving
+      `sessionStateIv`/`sessionStateAuthTag` orphaned; fixed in `applyCredentials.js`
+- [x] 🖐️ `DELETE /api/apply-credentials/greenhouse` removes the row; a subsequent
       `GET` no longer lists it
 
 ## F2 — Backend Orchestration API

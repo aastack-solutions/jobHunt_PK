@@ -65,8 +65,14 @@ router.put('/:platform', requireAuth, async (req, res) => {
       loginUrl: loginUrl || null,
       ...packed,
       isActive: true,
-      // A new login invalidates any previously-saved session cookies.
+      // A new login invalidates any previously-saved session cookies. Clear all
+      // three fields together — sessionStateIv/sessionStateAuthTag orphaned behind
+      // a null sessionStateEncrypted are dead weight, not a security risk (nothing
+      // reads them unless sessionStateEncrypted is set), but leaving them isn't
+      // what "cleared" means.
       sessionStateEncrypted: null,
+      sessionStateIv: null,
+      sessionStateAuthTag: null,
       sessionStateSavedAt: null,
     },
   });

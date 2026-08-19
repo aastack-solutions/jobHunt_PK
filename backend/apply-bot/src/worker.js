@@ -10,24 +10,20 @@ const backendApi = require('./services/backendApi');
 const { uploadScreenshot } = require('./services/storageService');
 const { resolveAdapter } = require('./adapters');
 const { withRetry, launchSession, closeSession, captureStorageState, screenshotBuffer } = require('./engine/browserSession');
-const { looksLikeLoginPage } = require('./engine/captchaDetector');
+const { looksLikeLoginPage, detectEmailVerification } = require('./engine/captchaDetector');
 
 const LOW_CONFIDENCE_THRESHOLD = 60;
 
-// TODO(F7): registry of currently-paused sessions, keyed by applyTaskId, so
-// liveView.js can find the right Playwright `page` to screenshot/relay input into,
-// and so a resolved-CAPTCHA signal from the live view can wake the corresponding
-// paused task back up. Exported now (inert — nothing currently calls
-// registerPausedSession) so F7 has a fixed place to plug into rather than
-// inventing its own module-scope Map. When F7 is implemented, the CAPTCHA-detected
-// branches below (currently: fail immediately) should call
-// registerPausedSession(applyTaskId, session) and await a promise that
-// clearPausedSession()/a 'mark-resolved' WS message resolves — see
-// docs/apply-bot/TECHNICAL_PLAN.md F7 and Contract B for the exact shape.
+// Registry of currently-paused sessions, keyed by applyTaskId, so liveView.js can
+// find the right Playwright `page` to screenshot/relay input into, and so a
+// 'mark-resolved' WS message can wake the corresponding paused task back up. Each
+// entry also carries the `resolve` function for that task's pending pause promise
+// (see waitForHumanResolution below) — liveView.js calls it, not just clears the
+// registry, or the paused task would time out instead of actually resuming.
 const pausedSessions = new Map();
 
-function registerPausedSession(applyTaskId, session) {
-  pausedSessions.set(applyTaskId, session);
+function registerPausedSession(applyTaskId, session, resolve) {
+  pausedSessions.set(applyTaskId, { session, resolve });
 }
 
 function getPausedSession(applyTaskId) {
@@ -53,6 +49,15 @@ const TASK_DEADLINE_MS = process.env.TASK_DEADLINE_MS_OVERRIDE
   ? parseInt(process.env.TASK_DEADLINE_MS_OVERRIDE, 10)
   : 3 * 60 * 1000;
 
+// How long a paused_human task waits for a real person to solve the challenge via
+// the live view before giving up. Deliberately much longer than TASK_DEADLINE_MS —
+// see docs/apply-bot/TECHNICAL_PLAN.md F7 (10 minutes for an unsolved CAPTCHA).
+// PAUSE_TIMEOUT_MS_OVERRIDE (F7 verification): same testability pattern as
+// TASK_DEADLINE_MS_OVERRIDE above — unset in every real deployment.
+const PAUSE_TIMEOUT_MS = process.env.PAUSE_TIMEOUT_MS_OVERRIDE
+  ? parseInt(process.env.PAUSE_TIMEOUT_MS_OVERRIDE, 10)
+  : 10 * 60 * 1000;
+
 async function downloadResumeBuffer(url) {
   if (!url) return null;
   try {
@@ -77,6 +82,43 @@ function classifyError(err) {
   if (message.includes('net::err') || message.includes('econnrefused') || message.includes('dns')) return 'NETWORK';
   if (message.includes('selector') || message.includes('element')) return 'PORTAL_LAYOUT';
   return 'UNKNOWN';
+}
+
+// Checks for either kind of human-hand-off challenge this project knows about.
+// CAPTCHA takes priority when (implausibly) both fire at once — arbitrary but
+// deterministic, and CAPTCHA is by far the more common real case (see F4/F5/F6).
+async function checkChallenge(page, adapter) {
+  const captcha = await adapter.detectCaptcha(page);
+  if (captcha.detected) return { pauseReason: 'captcha', failureClass: 'CAPTCHA', detail: captcha };
+  const emailVerify = await detectEmailVerification(page);
+  if (emailVerify.detected) return { pauseReason: 'email_verification', failureClass: 'EMAIL_VERIFICATION', detail: emailVerify };
+  return null;
+}
+
+// Reports the pause to the backend, registers the session so liveView.js can find
+// it, and waits for either a human to resolve it (via the WS 'mark-resolved'
+// message — see liveView.js) or PAUSE_TIMEOUT_MS to elapse. `ctx.paused` is set/
+// cleared around the wait so processTask()'s outer deadline (below) knows not to
+// count this time against the normal 3-minute budget — see that function's own
+// comment for why this is required, not optional.
+async function waitForHumanResolution(applyTaskId, session, pauseReason, ctx) {
+  ctx.paused = true;
+  await backendApi.reportResult(applyTaskId, { status: 'paused_human', pauseReason }).catch((err) => {
+    logger.warn(`worker: failed to report paused_human for ${applyTaskId} — ${err.message}`);
+  });
+
+  const resolvedByHuman = await new Promise((resolve) => {
+    let timer;
+    registerPausedSession(applyTaskId, session, () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+    timer = setTimeout(() => resolve(false), PAUSE_TIMEOUT_MS);
+  });
+
+  clearPausedSession(applyTaskId); // no-op if liveView.js's mark-resolved already cleared it
+  ctx.paused = false;
+  return resolvedByHuman;
 }
 
 // The actual work — everything below is unchanged from before except that `ctx`
@@ -109,6 +151,35 @@ async function runTask(applyTaskId, ctx) {
     }
   };
 
+  // Handles a detected challenge at any checkpoint: pauses for a human via the
+  // live view, and on failure to resolve reports the terminal failure and returns
+  // `false` so the caller knows to stop. Returns `true` if the human resolved it
+  // and the caller should continue past this checkpoint as normal.
+  const handleChallenge = async (challenge, stepLabel) => {
+    await captureStep(stepLabel);
+    const resolved = await waitForHumanResolution(applyTaskId, session, challenge.pauseReason, ctx);
+    if (!resolved) {
+      await backendApi.reportResult(applyTaskId, {
+        status: 'failed', failureClass: challenge.failureClass,
+        failureReason: `Unsolved ${challenge.pauseReason} challenge — timed out after ${PAUSE_TIMEOUT_MS / 60000} minutes with no human response.`,
+        screenshotKeys,
+      });
+      return false;
+    }
+    // Re-check rather than blindly trusting the human's "I solved it" signal —
+    // the same page is still open, so this is cheap and catches a premature click.
+    const stillPresent = await checkChallenge(session.page, adapter);
+    if (stillPresent) {
+      await backendApi.reportResult(applyTaskId, {
+        status: 'failed', failureClass: stillPresent.failureClass,
+        failureReason: `${stillPresent.pauseReason} challenge still present after being marked resolved.`,
+        screenshotKeys,
+      });
+      return false;
+    }
+    return true;
+  };
+
   try {
     await withRetry(() => session.page.goto(task.applyUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
     await captureStep('before-fill');
@@ -131,17 +202,9 @@ async function runTask(applyTaskId, ctx) {
       return;
     }
 
-    const preFillCaptcha = await adapter.detectCaptcha(session.page);
-    if (preFillCaptcha.detected) {
-      await captureStep('captcha-detected');
-      // Phase 1 has no live-view/pause UI yet — a detected CAPTCHA just fails the
-      // task with the reason logged, rather than pausing (see plan §9, Phase 1 scope).
-      await backendApi.reportResult(applyTaskId, {
-        status: 'failed', failureClass: 'CAPTCHA',
-        failureReason: `CAPTCHA detected before form fill (${preFillCaptcha.strategy}).`,
-        screenshotKeys,
-      });
-      return;
+    const preFillChallenge = await checkChallenge(session.page, adapter);
+    if (preFillChallenge) {
+      if (!(await handleChallenge(preFillChallenge, 'captcha-detected'))) return;
     }
 
     const { fieldsFilled, confidence } = await adapter.fillApplication(session.page, profile);
@@ -156,15 +219,9 @@ async function runTask(applyTaskId, ctx) {
       return;
     }
 
-    const postFillCaptcha = await adapter.detectCaptcha(session.page);
-    if (postFillCaptcha.detected) {
-      await captureStep('captcha-after-fill');
-      await backendApi.reportResult(applyTaskId, {
-        status: 'failed', failureClass: 'CAPTCHA',
-        failureReason: `CAPTCHA detected after form fill (${postFillCaptcha.strategy}).`,
-        fieldsFilled, confidenceScore: confidence, screenshotKeys,
-      });
-      return;
+    const postFillChallenge = await checkChallenge(session.page, adapter);
+    if (postFillChallenge) {
+      if (!(await handleChallenge(postFillChallenge, 'captcha-after-fill'))) return;
     }
 
     if (task.mode !== 'live') {
@@ -188,9 +245,9 @@ async function runTask(applyTaskId, ctx) {
     await session.page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
     await captureStep('after-submit');
 
-    const postSubmitCaptcha = await adapter.detectCaptcha(session.page);
-    const result = postSubmitCaptcha.detected
-      ? { status: 'failed', failureClass: 'CAPTCHA', failureReason: 'CAPTCHA detected after submit — outcome unknown.', fieldsFilled, confidenceScore: confidence, screenshotKeys }
+    const postSubmitChallenge = await checkChallenge(session.page, adapter);
+    const result = postSubmitChallenge
+      ? { status: 'failed', failureClass: postSubmitChallenge.failureClass, failureReason: `${postSubmitChallenge.pauseReason} challenge detected after submit — outcome unknown.`, fieldsFilled, confidenceScore: confidence, screenshotKeys }
       : { status: 'submitted', fieldsFilled, confidenceScore: confidence, screenshotKeys };
     if (loginResult?.attempted && task.credential) {
       result.sessionState = await captureStorageState(session.context);
@@ -202,44 +259,74 @@ async function runTask(applyTaskId, ctx) {
       .reportResult(applyTaskId, { status: 'failed', failureClass: classifyError(err), failureReason: err.message, screenshotKeys })
       .catch(() => {});
   } finally {
+    clearPausedSession(applyTaskId); // defensive — should already be cleared, never leave a stale registry entry
     await closeSession(session);
     ctx.session = null;
   }
 }
 
 // Wraps runTask() with the TASK_DEADLINE_MS ceiling described above. If runTask
-// finishes first, the deadline timer is cleared and this is a no-op wrapper. If the
-// deadline fires first, it force-closes whatever browser session runTask currently
-// has open (via the shared `ctx`) and reports a TIMEOUT failure — freeing the
-// concurrency:1 queue to move on. Note: in the rare case both fire close together,
-// the task's final status may be written twice (harmless — same row, last write
-// wins); not worth the extra complexity of a stricter mutex for how rarely the
-// deadline should actually trigger.
+// finishes first, the deadline is cleared and this is a no-op wrapper. If it fires
+// first, it force-closes whatever browser session runTask currently has open (via
+// the shared `ctx`) and reports a TIMEOUT failure — freeing the concurrency:1
+// queue to move on. Note: in the rare case both fire close together, the task's
+// final status may be written twice (harmless — same row, last write wins); not
+// worth the extra complexity of a stricter mutex for how rarely this should race.
+//
+// **Pause-aware, per F7's required design point** (docs/apply-bot/TECHNICAL_PLAN.md
+// "Reliability Hardening" §7): the naive single-setTimeout version of this deadline
+// would fire mid-pause and force-close a session a human may be actively looking at
+// through the live view — a real bug, not a hypothetical one, the moment
+// waitForHumanResolution() above can legitimately keep a task "in progress" for up
+// to 10 minutes. Implemented as a 1-second polling tick instead of one fixed timer:
+// each tick, if `ctx.paused` is true, the tick just reschedules itself without
+// counting against the deadline at all (the pause has its OWN timeout, enforced
+// inside waitForHumanResolution — this loop doesn't need to duplicate that). Once
+// unpaused, elapsed wall-clock time excludes whatever was spent paused, so the task
+// gets its full, un-shortened TASK_DEADLINE_MS budget for the actual work.
 async function processTask(applyTaskId) {
-  const ctx = { session: null };
-  let deadlineTimer;
+  const ctx = { session: null, paused: false };
+  const startedAt = Date.now();
+  let pausedSince = null;
+  let totalPausedMs = 0;
+  let settled = false;
+  let tickTimer;
 
-  const deadline = new Promise((resolve) => {
-    deadlineTimer = setTimeout(async () => {
-      // TODO(F7 — REQUIRED, see docs/apply-bot/TECHNICAL_PLAN.md's "Reliability
-      // Hardening" §7): this must NOT fire while the task is legitimately paused
-      // for a human (getPausedSession(applyTaskId) is set) — check that here and
-      // skip/reschedule with a separate, longer deadline instead of force-closing
-      // a session a human may currently be looking at through the live view.
-      logger.error(`worker: task ${applyTaskId} exceeded ${TASK_DEADLINE_MS}ms deadline — forcing close`);
-      if (ctx.session) await closeSession(ctx.session).catch(() => {});
-      await backendApi
-        .reportResult(applyTaskId, {
-          status: 'failed', failureClass: 'TIMEOUT',
-          failureReason: `Task exceeded the ${TASK_DEADLINE_MS}ms overall deadline (likely a hung page or network call).`,
-        })
-        .catch(() => {});
-      resolve();
-    }, TASK_DEADLINE_MS);
-  });
+  const tick = async () => {
+    if (settled) return;
 
-  await Promise.race([runTask(applyTaskId, ctx), deadline]);
-  clearTimeout(deadlineTimer);
+    if (ctx.paused) {
+      if (pausedSince === null) pausedSince = Date.now();
+      tickTimer = setTimeout(tick, 1000);
+      return;
+    }
+    if (pausedSince !== null) {
+      totalPausedMs += Date.now() - pausedSince;
+      pausedSince = null;
+    }
+
+    const elapsed = Date.now() - startedAt - totalPausedMs;
+    if (elapsed < TASK_DEADLINE_MS) {
+      tickTimer = setTimeout(tick, Math.min(1000, TASK_DEADLINE_MS - elapsed));
+      return;
+    }
+
+    settled = true;
+    logger.error(`worker: task ${applyTaskId} exceeded ${TASK_DEADLINE_MS}ms deadline (excluding paused time) — forcing close`);
+    clearPausedSession(applyTaskId);
+    if (ctx.session) await closeSession(ctx.session).catch(() => {});
+    await backendApi
+      .reportResult(applyTaskId, {
+        status: 'failed', failureClass: 'TIMEOUT',
+        failureReason: `Task exceeded the ${TASK_DEADLINE_MS}ms overall deadline, excluding any time spent legitimately paused for a human (likely a hung page or network call).`,
+      })
+      .catch(() => {});
+  };
+  tickTimer = setTimeout(tick, 1000);
+
+  await runTask(applyTaskId, ctx);
+  settled = true;
+  clearTimeout(tickTimer);
 }
 
 function createApplyBotWorker() {

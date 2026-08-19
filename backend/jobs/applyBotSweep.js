@@ -10,7 +10,7 @@
 // check that doesn't depend on the crashed process to clean up after itself.
 //
 // Also load-bearing for correctness, not just tidiness: applyBotSelect.js's dedupe
-// logic treats 'running' and 'paused_captcha' as "in flight" so it never creates a
+// logic treats 'running' and 'paused_human' as "in flight" so it never creates a
 // second task for the same job — a permanently-stuck row would silently block that
 // job from ever being retried for that user, forever.
 const prisma = require('../src/db');
@@ -23,9 +23,14 @@ const logger = require('../src/logger');
 // the expected duration.
 const RUNNING_STALE_MS = 10 * 60 * 1000;
 
-// 'paused_captcha' (Phase 2, F7) is bound by how long a human takes to notice and
-// solve a challenge, not by anything the worker controls — a much longer threshold
-// is appropriate. Included now so F7 doesn't need to build this separately.
+// 'paused_human' (F7) is bound by how long a human takes to notice and solve a
+// challenge, not by anything the worker controls — a much longer threshold is
+// appropriate here than RUNNING_STALE_MS above. This sweep's PAUSED_STALE_MS is an
+// OUTER, out-of-process safety net distinct from worker.js's own in-process
+// PAUSE_TIMEOUT_MS (10 min, checked while the process is still alive) — this one
+// catches the case the in-process timer can't: the whole apply-bot process dying
+// while a task sits paused, which would otherwise leave it paused forever with no
+// one ever timing it out.
 const PAUSED_STALE_MS = 30 * 60 * 1000;
 
 async function sweepStaleApplyTasks() {
@@ -47,18 +52,27 @@ async function sweepStaleApplyTasks() {
     },
   });
 
-  const stalePaused = await prisma.applyTask.updateMany({
-    where: { status: 'paused_captcha', captchaDetectedAt: { lt: new Date(now - PAUSED_STALE_MS) } },
-    data: {
-      status: 'failed',
-      failureClass: 'CAPTCHA',
-      failureReason: `Task was paused for a CAPTCHA/challenge for over ${PAUSED_STALE_MS / 60000} minutes with no human response — timed out.`,
-      completedAt: new Date(),
-    },
+  // Fetched individually (not updateMany) so each row's failureClass can reflect
+  // its own pauseReason rather than hardcoding 'CAPTCHA' for every kind of pause.
+  const stalePausedTasks = await prisma.applyTask.findMany({
+    where: { status: 'paused_human', captchaDetectedAt: { lt: new Date(now - PAUSED_STALE_MS) } },
+    select: { id: true, pauseReason: true },
   });
+  for (const t of stalePausedTasks) {
+    await prisma.applyTask.update({
+      where: { id: t.id },
+      data: {
+        status: 'failed',
+        failureClass: t.pauseReason === 'email_verification' ? 'EMAIL_VERIFICATION' : 'CAPTCHA',
+        failureReason: `Task was paused (${t.pauseReason || 'unknown reason'}) for over ${PAUSED_STALE_MS / 60000} minutes with no human response — timed out. This is the out-of-process safety net (see PAUSED_STALE_MS's comment); the apply-bot process may have crashed while this task was paused.`,
+        completedAt: new Date(),
+      },
+    });
+  }
+  const stalePaused = { count: stalePausedTasks.length };
 
   if (staleRunning.count > 0 || stalePaused.count > 0) {
-    logger.warn(`apply-bot-sweep: swept ${staleRunning.count} stale 'running' + ${stalePaused.count} stale 'paused_captcha' task(s)`);
+    logger.warn(`apply-bot-sweep: swept ${staleRunning.count} stale 'running' + ${stalePaused.count} stale 'paused_human' task(s)`);
   }
   return { staleRunning: staleRunning.count, stalePaused: stalePaused.count };
 }

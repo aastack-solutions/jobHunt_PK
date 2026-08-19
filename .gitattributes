@@ -1,0 +1,7 @@
+# Prisma migration SQL files must never be line-ending-converted — their exact
+# bytes are checksummed by `prisma migrate dev`'s shadow-DB validation, and
+# Windows' core.autocrlf silently rewriting LF to CRLF on checkout breaks that
+# checksum for every migration ever created on a non-Windows machine (or with
+# autocrlf off), even though `migrate deploy`/`migrate status` tolerate it fine —
+# found 2026-08-19 (F7) when `migrate dev` refused to proceed over exactly this.
+backend/prisma/migrations/**/migration.sql -text

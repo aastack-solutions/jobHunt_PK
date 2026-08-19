@@ -197,19 +197,22 @@ model ApplyTask {
   adapterUsed       String    // "greenhouse" | "lever" | "ashby" | "generic"
   mode              String    // "shadow" | "live"
   status            String    @default("queued")
-  // queued | running | paused_captcha | shadow_complete | submitted | failed
+  // queued | running | paused_human | shadow_complete | submitted | failed
   // | skipped_low_confidence | skipped_duplicate | skipped_cap_reached | unknown_outcome
   // unknown_outcome: set ONLY by applyBotSweep.js when a task is stuck 'running' too
   // long (the apply-bot process likely crashed after possibly already submitting) —
   // deliberately excluded from applyBotSelect.js's auto-retry to avoid a duplicate
   // application; needs manual human resolution.
-  failureClass      String?   // CAPTCHA | AUTH | TIMEOUT | PORTAL_LAYOUT | NETWORK | LOW_CONFIDENCE | SSRF_BLOCKED | UNKNOWN
+  // paused_human (F7, generalized from the original paused_captcha): a human hand-off
+  // is in progress via the live-view — see pauseReason for which kind.
+  pauseReason       String?   // "captcha" | "email_verification" | "unknown_challenge" — set only while status is paused_human
+  failureClass      String?   // CAPTCHA | EMAIL_VERIFICATION | AUTH | TIMEOUT | PORTAL_LAYOUT | NETWORK | LOW_CONFIDENCE | SSRF_BLOCKED | UNKNOWN
   fieldsFilled      Json?     // field name -> value actually typed; password-like fields redacted
   confidenceScore   Int?      // generic adapter only
   failureReason     String?
   screenshotKeys    String[]  @default([]) // R2 object keys, one per meaningful step
-  captchaDetectedAt DateTime?
-  captchaSolvedAt   DateTime?
+  captchaDetectedAt DateTime? // set when status first transitions to paused_human, any pauseReason
+  captchaSolvedAt   DateTime? // set when a paused_human task resumes (human resolved it)
   startedAt         DateTime?
   completedAt       DateTime?
   createdAt         DateTime  @default(now())

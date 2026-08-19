@@ -39,7 +39,7 @@ touching what.
 | F4 | Lever adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — name/email/resume selectors confirmed correct, CAPTCHA (hCaptcha) confirmed present on all 5 (resolves prior open question), 2 real bugs found & fixed (locateSubmit selector, isAlreadySolved textarea-vs-input check) |
 | F5 | Greenhouse adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings on the new job-boards.greenhouse.io domain — selectors correct as-is (no code bug found), CAPTCHA confirmed present on all 5 (1 only post-fill, confirming the dual pre/post check matters), hydration-timing question resolved (no wait needed) |
 | F6 | Ashby adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — 2 real bugs found & fixed (a genuine field-scan hydration-timing race, unlike F5's Greenhouse where none was needed; and a click-through-to-/application form flow); CAPTCHA not observed on any of the 5 (unlike F4/F5's 100%) |
-| F7 | CAPTCHA / bot-challenge live-view | 🔴 Not started | Unassigned | Scope grew: must also cover email-verification challenges AND make TASK_DEADLINE_MS pause-aware (see Decisions Log 2026-08-17) |
+| F7 | CAPTCHA / bot-challenge live-view | ✅ Done, verified (2 items narrower-scope) | Claude (session) | Verified 2026-08-19 against a real hCaptcha — full pause→live-view→resume cycle confirmed live, critical TASK_DEADLINE_MS pause-aware regression confirmed with real evidence, 1 real bug fixed (WS auth accepted-then-closed instead of never-accepted). Mouse/keyboard round-trip and email-verification not exercised against real occurrences — see TEST_PLAN.md |
 | F8 | Generic engine (non-ATS sources) | 🔴 Not started, gated off | Unassigned | `APPLY_BOT_GENERIC_ENABLED=false` — don't enable until built |
 | F9 | Failure measurement & alerting | 🟡 Partially built | Unassigned | Staleness/needs-review dashboard alerting done 2026-08-17; per-adapter success-rate reporting still open |
 | F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 43 automated tests passing, 3 skipped (Playwright-only) as of 2026-08-19 — DB-dependent sweep/callback tests un-skipped and made real during F2 verification; remaining items need a real Playwright install |
@@ -53,6 +53,116 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F7 built and verified against a real hCaptcha; critical pause-aware-deadline requirement confirmed with real evidence; 1 real security bug fixed
+Branch: `f7-captcha-live-view` (branched from `master` after merging F6 in).
+
+**A genuine mid-session scare, resolved as a false alarm — recorded because the
+lesson is real even though the incident wasn't**: partway through this ticket, a
+batch of "file changed on disk since you last read it" notices showed several F7
+files (`worker.js`, `liveView.js`, `schema.prisma`, others) reverted to their
+pre-F7 content, and a `git status`/`git branch --show-current` pair run
+immediately after appeared to show the working tree on `f2-backend-orchestration-api`
+with a clean tree — i.e., it looked like all of F7's uncommitted work had been
+silently discarded by a branch switch neither typed nor intended, mirroring F4's
+process note about branch-state surprises. Immediately re-ran `git status`,
+`git branch --show-current`, and `git log -3`, plus a direct `grep` for
+F7-specific code in `worker.js`/`liveView.js`: everything was actually present and
+correct, on the correct branch, correctly based on `master` (which has F1-F6).
+The earlier alarming output was a stale/transient artifact (most likely explanation:
+several `run_in_background` server processes were active simultaneously at that
+point, and one Bash call's result got crossed with a stale buffer) — not a real
+event. **Why this is worth recording despite being a non-event**: the correct
+response to "my work might be gone" is to verify immediately and directly (fresh
+`git status`, `git log`, `grep` for known-recent content) before either panicking
+or, worse, assuming the alarming signal was itself wrong without checking — this
+time the verification confirmed nothing was lost, but the verification step is
+what actually established that, not a hope that it would be fine.
+
+**Implemented the plan's required generalization**: `paused_captcha` → `paused_human`
++ `pauseReason` (`'captcha' | 'email_verification' | 'unknown_challenge'`) throughout
+— schema (`ApplyTask.pauseReason`, new migration), the callback API's Zod schema
+(additive, `pauseReason` required exactly when `status: 'paused_human'` via
+`.refine()`), `applyBotSweep.js`'s stale-pause cleanup (now reads each task's own
+`pauseReason` to pick the right `failureClass` instead of hardcoding `CAPTCHA`),
+and `applyBotSelect.js`'s in-flight dedupe check.
+
+**Full pause→live-view→resume cycle verified against a real, currently-open Lever
+posting** (the same H1 posting F4 confirmed has hCaptcha): seeded a real `ApplyTask`,
+watched the worker detect the real CAPTCHA and correctly enter `paused_human` with
+`pauseReason: 'captcha'` (not fail immediately, matching the whole point of this
+feature), connected an authenticated WS test client to
+`/api/apply-bot/live/:taskId` (real session-cookie auth verified against the actual
+Redis session store, not mocked), received real JPEG screenshot frames of the live
+browser session, sent `mark-resolved`, and confirmed the task actually resumed
+(not just acknowledged) — it re-checked the challenge (deliberately not trusting
+the human signal blindly) and, since the real CAPTCHA genuinely wasn't solved in
+this test, correctly failed with "still present after being marked resolved"
+rather than hanging, crashing, or proceeding to fill a form behind a live CAPTCHA.
+This is real evidence the entire chain works, not three pieces individually mocked.
+
+**Critical requirement verified with real evidence, not just code review**: the
+plan explicitly flagged that a naive `TASK_DEADLINE_MS` would silently kill a
+legitimately-paused task the first time a real CAPTCHA was hit, and asked for this
+to be proven, not assumed. Restructured `processTask()`'s deadline from a single
+`setTimeout` into a 1-second polling tick that freezes elapsed-time accounting
+while `ctx.paused` is true (set/cleared around `waitForHumanResolution()`).
+Verified with `TASK_DEADLINE_MS_OVERRIDE=8000`/`PAUSE_TIMEOUT_MS_OVERRIDE=25000`
+(same dev-only override pattern as F3): a paused task survived past the 8-second
+task deadline completely untouched and only timed out at ~27 seconds — matching
+the pause timeout, not the task deadline, exactly the distinction that matters.
+
+**Real security bug found and fixed**: `liveView.js`'s original
+`X-Apply-Bot-Secret` check ran inside the `connection` event handler — but `ws`
+completes the WebSocket handshake (firing the client's `open` event) *before*
+`connection` runs, so an unauthorized client's connection briefly succeeded before
+being closed a moment later. Confirmed this gap directly: a test client with a
+wrong/missing secret saw its `open` event fire. Fixed by moving the check into
+`verifyClient` (runs during the HTTP upgrade, before any handshake response is
+sent) — re-tested after the fix: the same wrong-secret client now gets a plain
+HTTP 401 and its `open` event never fires at all. Also implemented and verified
+the backend-side proxy authentication (`applyBotLive.js`): manually parsing and
+unsigning the `express-session` cookie (a raw WS upgrade never runs through the
+`session` middleware) against the real Redis session store, then checking task
+ownership — confirmed rejecting both a missing cookie and a task-id the
+authenticated caller doesn't own, both with 401 before any proxying happens.
+
+**A genuinely tangential but real finding, fixed and documented, not chased
+further than warranted**: `npx prisma migrate dev` refused to proceed, reporting
+`20260818170025_apply_bot_and_tracking` "was modified after it was applied" — the
+actual cause was Windows' `core.autocrlf` silently converting that migration's
+LF line endings to CRLF on checkout, changing the file's checksum from what was
+recorded when it was first applied (in F1). `migrate deploy`/`migrate status`
+(what production's actual start command uses) were unaffected — this only blocks
+the local-dev convenience command. Fixed going forward with a new
+`.gitattributes` rule (`-text` on `backend/prisma/migrations/**/migration.sql`,
+so git never touches their line endings again) and re-normalized the three
+existing migration files to LF. Deliberately did not chase this further once the
+non-blocking nature was confirmed and the recurrence was prevented — matches this
+session's standing rule of following a real finding to a real fix without
+over-investing past the point of diminishing return.
+
+**Deliberately not exercised, honestly documented rather than skipped
+silently**: a mouse/keyboard event round-trip through the live view (the
+`mark-resolved` signal path was tested end-to-end instead, which exercises the
+resume mechanism itself; the input-relay code was reviewed by inspection but not
+proven against a real click), and the email-verification challenge path against a
+real occurrence (rare/hard to reproduce deterministically per the original
+research — `detectEmailVerification()`'s pattern list and `worker.js`'s handling
+are symmetric with the CAPTCHA path and share its test coverage by construction,
+but the text patterns themselves are unverified against a real prompt). Also not
+built here, correctly out of scope: the frontend live-view component itself
+(`ApplyBotLiveView.jsx`) is F11's responsibility per the plan's own division —
+this session verified the backend/apply-bot halves of Contract B using a raw test
+WS client standing in for the frontend, exactly as the plan anticipated two
+people could do independently.
+
+**Why**: same bar as F1-F6, applied to the highest-complexity feature in the whole
+plan — real evidence for the pieces that could be tested against a real live
+system (the actual point of this ticket, the pause-aware deadline, was proven, not
+just reasoned about), and an honest accounting of the two pieces that couldn't be
+(a real human click, a real email-verification prompt) rather than a checkbox that
+looks the same either way.
 
 ### 2026-08-19 — F6 verified against 5 real live Ashby postings; 2 real bugs found (a genuine hydration race this time, plus a click-through flow), CAPTCHA question resolved
 Branch: `f6-ashby-adapter` (branched from `master` after merging F5 in; `git log

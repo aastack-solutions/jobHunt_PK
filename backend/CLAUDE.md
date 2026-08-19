@@ -17,13 +17,20 @@ Rules for everything inside `backend/`. Read before touching any file here.
 "rss-parser": "3.13.0",     "cheerio": "1.2.0",
 "axios": "1.18.1",          "winston": "3.19.0",
 "dotenv": "17.4.2",         "@json2csv/plainjs": "7.0.6",
-"ws": "8.18.0"
+"ws": "8.18.0",             "cookie": "0.7.2",
+"cookie-signature": "1.2.2"
 ```
 
-`ws` (added 2026-08-17, F7 scaffold): WebSocket proxy for the apply-bot live-view
-feature (`routes/applyBotLive.js`) — the only place raw WebSockets are used in this
-codebase; everything else stays REST. Not yet installed/wired into `app.js`; see
-`docs/apply-bot/TECHNICAL_PLAN.md` F7.
+`ws` (added 2026-08-17, F7 scaffold; wired in 2026-08-19): WebSocket proxy for the
+apply-bot live-view feature (`routes/applyBotLive.js`) — the only place raw
+WebSockets are used in this codebase; everything else stays REST.
+
+`cookie` / `cookie-signature` (added 2026-08-19, F7): already-present transitive
+dependencies of `express-session`, pinned explicitly now that `applyBotLive.js`
+`require()`s them directly — a raw WS upgrade never runs through the `session`
+middleware, so authenticating it means manually parsing and unsigning the session
+cookie the same way `express-session` does internally, then looking it up against
+the same Redis store (`connect-redis`'s `sess:` prefix).
 
 ## File Layout — Every File Has One Home
 

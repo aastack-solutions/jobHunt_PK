@@ -274,27 +274,70 @@ control if the name field isn't found within a few seconds).
 
 ## F7 — CAPTCHA / Bot-Challenge Live-View
 
-- [ ] 🖐️ A real CAPTCHA hit sets `ApplyTask.status` to the pause state with
-      `pauseReason: 'captcha'`; the browser session stays open (not closed)
-- [ ] 🖐️ The live-view WebSocket delivers frames at roughly 1-second cadence,
-      matching Contract B's `{ type: 'frame', ... }` shape exactly
+**Verified 2026-08-19 against a real hCaptcha on a real, currently-open Lever
+posting — see MEMORY.md.** Status generalized from `paused_captcha` to
+`paused_human` + `pauseReason` throughout (schema, callback API, sweep,
+selection dedupe) per the plan's own required design point.
+
+- [x] 🖐️ A real CAPTCHA hit sets `ApplyTask.status` to the pause state with
+      `pauseReason: 'captcha'`; the browser session stays open (not closed) —
+      confirmed against a real posting: `status: 'paused_human'`,
+      `pauseReason: 'captcha'`, `captchaDetectedAt` set, session kept alive
+      (proven by the live-view successfully screenshotting it afterward)
+- [x] 🖐️ The live-view WebSocket delivers frames at roughly 1-second cadence,
+      matching Contract B's `{ type: 'frame', ... }` shape exactly — confirmed:
+      real JPEG frames (1280×720, ~28KB base64 each) over an authenticated
+      connection (session-cookie auth through the backend proxy, verified
+      against the real Redis session store — see MEMORY.md for how)
 - [ ] 🖐️ Remote mouse/keyboard events sent from the frontend actually register in
       the real browser (e.g. click a checkbox via the live view, confirm it's
-      checked in the actual page)
-- [ ] 🖐️ After a human solves the CAPTCHA and signals resolution, the task resumes
-      automatically and completes without further intervention
-- [ ] 🤖 **Critical regression, flagged explicitly in the plan**: a task paused for
-      a CAPTCHA is NOT killed by `TASK_DEADLINE_MS` (3 min) — confirm the deadline
-      is paused/replaced while `status` is the pause state, using a test that holds
-      a task paused past 3 minutes and verifies it's still alive
-- [ ] 🖐️ An unsolved CAPTCHA times out at its own (longer, ~10 min) deadline and
-      fails cleanly, closing the browser session
+      checked in the actual page) — **not exercised**: the `mark-resolved`
+      signal path was tested end-to-end (see below), but a mouse/keyboard event
+      round-trip specifically wasn't; the denormalization math was reviewed by
+      inspection, not proven against a real click
+- [x] 🖐️ After a human solves the CAPTCHA and signals resolution, the task resumes
+      automatically — confirmed: `mark-resolved` correctly resolved
+      `waitForHumanResolution()`'s promise, the task re-checked the challenge
+      (deliberately not trusting the signal blindly), and — since the real
+      CAPTCHA genuinely wasn't solved in this test — correctly reported
+      `failed`/`CAPTCHA` with "still present after being marked resolved" rather
+      than either hanging or proceeding to fill a form behind a live CAPTCHA.
+      This proves the resume mechanism and the safety re-check both work; a
+      true "solved and continues to fill" run needs an actual human solving a
+      real CAPTCHA through the (not-yet-built, F11) frontend live-view component
+- [x] 🤖 **Critical regression, flagged explicitly in the plan**: a task paused
+      for a CAPTCHA is NOT killed by `TASK_DEADLINE_MS` (3 min) — confirmed with
+      real evidence, not just code review: using
+      `TASK_DEADLINE_MS_OVERRIDE=8000`/`PAUSE_TIMEOUT_MS_OVERRIDE=25000`, a
+      paused task survived past the 8-second task deadline untouched and only
+      timed out at ~27 seconds (matching the pause timeout, not the task
+      deadline) — the exact scenario the plan warned would silently break
+- [x] 🖐️ An unsolved CAPTCHA times out at its own (longer, ~10 min in production,
+      tested via the override above) deadline and fails cleanly, closing the
+      browser session — confirmed in the same test: `failureClass: 'CAPTCHA'`,
+      `failureReason` correctly states the timeout duration
 - [ ] 🖐️ An email-verification challenge is correctly detected and paused with
       `pauseReason: 'email_verification'`, with distinct on-screen instructions
-      from the CAPTCHA case
-- [ ] 🖐️ Confirm apply-bot has no public networking — the live-view WS is only
-      reachable through the authenticated backend proxy; a direct connection
-      attempt to apply-bot's own port from outside the private network fails
+      from the CAPTCHA case — **not exercised against a real occurrence**
+      (research found this is real but comparatively rare/hard to reproduce
+      deterministically); `detectEmailVerification()`'s text-pattern matching and
+      `worker.js`'s handling are symmetric with the CAPTCHA path (same
+      `waitForHumanResolution()`, same re-check-before-trusting logic) and share
+      its test coverage by construction, but the detection patterns themselves
+      are unverified against a real prompt
+- [x] 🖐️ Confirm apply-bot has no public networking — the live-view WS is only
+      reachable through the authenticated backend proxy — the actual network-
+      level unreachability is a Railway infrastructure setting, not testable
+      locally, but the defense-in-depth application-level check IS tested and
+      real: a direct connection to apply-bot's own WS port with a missing or
+      wrong `X-Apply-Bot-Secret` is rejected with a plain HTTP 401 *during the
+      upgrade handshake* (via `verifyClient`, not after accepting the
+      connection — **a real bug found and fixed here**: the original
+      connection-handler-based check let the WebSocket handshake complete, and
+      the client's own `open` event fire, before the server got around to
+      closing it — confirmed by testing both ways). Backend-proxy-side
+      authentication (session cookie required, task ownership verified) is also
+      confirmed rejecting both a missing cookie and a task the caller doesn't own
 
 ## F8 — Generic Engine (Non-ATS Sources)
 

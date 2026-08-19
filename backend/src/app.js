@@ -141,6 +141,10 @@ const server = app.listen(port, () => {
   const { createAIWorker } = require('./workers/aiWorker');
   createSchedulerWorker();
   createAIWorker();
+
+  // WS proxy for the apply-bot live-view (F7) — same after-listen timing rule.
+  const { attachApplyBotLiveProxy } = require('./routes/applyBotLive');
+  attachApplyBotLiveProxy(server);
 });
 
 module.exports = { app, server };

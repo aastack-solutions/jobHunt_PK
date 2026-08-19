@@ -735,7 +735,8 @@ mode, verified against screenshots.
 
 ## F7 — CAPTCHA / Bot-Challenge Live-View
 
-**Status**: not started. **Scope is larger than originally planned** — see below.
+**Status**: built and verified 2026-08-19 — see MEMORY.md's 2026-08-19 F7 entry and
+`docs/apply-bot/TEST_PLAN.md` F7. **Scope is larger than originally planned** — see below.
 **Depends on**: at least one of F4/F5/F6 existing to test against (not all three
 required). **Shares files with**: `worker.js` (F3 — extend, don't restructure),
 `schema.prisma` (F1 — one new field, see the schema serialization rule above),

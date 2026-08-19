@@ -1,6 +1,6 @@
 // Playwright browser/context lifecycle. One context per ApplyTask, closed when the
 // task finishes (submitted/failed/shadow_complete) — kept OPEN across a
-// 'paused_captcha' state in Phase 2, since the live-view needs the same page.
+// 'paused_human' state in Phase 2, since the live-view needs the same page.
 const { chromium } = require('playwright');
 const logger = require('../logger');
 const { installSsrfGuard } = require('./ssrfGuard');

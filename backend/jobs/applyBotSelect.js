@@ -53,7 +53,7 @@ async function selectForUser(user, cap, mode) {
     // re-selection indefinitely, not just for the same dedupe window as a normal
     // application, until a human resolves it.
     prisma.applyTask.findMany({
-      where: { userId: user.id, status: { in: ['queued', 'running', 'paused_captcha', 'submitted', 'shadow_complete', 'unknown_outcome'] } },
+      where: { userId: user.id, status: { in: ['queued', 'running', 'paused_human', 'submitted', 'shadow_complete', 'unknown_outcome'] } },
       select: { jobId: true },
     }),
   ]);

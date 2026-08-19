@@ -133,13 +133,20 @@ router.get('/apply-bot/tasks/:id', requireApplyBotSecret, async (req, res) => {
 const callbackSchema = z
   .object({
     status: z.enum([
-      'paused_captcha', 'shadow_complete', 'submitted', 'failed',
+      'paused_human', 'shadow_complete', 'submitted', 'failed',
       'skipped_low_confidence', 'skipped_duplicate', 'skipped_cap_reached',
     ]),
+    // Required alongside status: 'paused_human' — which kind of human hand-off this
+    // is (F7's Contract B — the live-view frontend shows different instructions per
+    // reason). Validated together below, not in the object shape, since Zod's
+    // .refine() on a .strict() object is simpler than a discriminated union here.
+    pauseReason: z.enum(['captcha', 'email_verification', 'unknown_challenge']).optional(),
     // SSRF_BLOCKED = our own ssrfGuard.js aborted a request — see worker.js's
     // classifyError(); kept distinct from NETWORK so it's never misread as an infra
-    // problem in the F9 failure-class metrics.
-    failureClass: z.enum(['CAPTCHA', 'AUTH', 'TIMEOUT', 'PORTAL_LAYOUT', 'NETWORK', 'LOW_CONFIDENCE', 'SSRF_BLOCKED', 'UNKNOWN']).optional(),
+    // problem in the F9 failure-class metrics. EMAIL_VERIFICATION kept distinct from
+    // CAPTCHA for the same reason — an unsolved email-verification challenge is a
+    // different failure mode, not a CAPTCHA that happened to time out.
+    failureClass: z.enum(['CAPTCHA', 'EMAIL_VERIFICATION', 'AUTH', 'TIMEOUT', 'PORTAL_LAYOUT', 'NETWORK', 'LOW_CONFIDENCE', 'SSRF_BLOCKED', 'UNKNOWN']).optional(),
     failureReason: z.string().max(2000).optional(),
     fieldsFilled: z.record(z.string(), z.any()).optional(),
     confidenceScore: z.number().int().min(0).max(100).optional(),
@@ -148,7 +155,11 @@ const callbackSchema = z
     // fresh login succeeded) — encrypted here before it ever touches the DB.
     sessionState: z.record(z.string(), z.any()).optional(),
   })
-  .strict();
+  .strict()
+  .refine((data) => data.status !== 'paused_human' || Boolean(data.pauseReason), {
+    message: 'pauseReason is required when status is paused_human',
+    path: ['pauseReason'],
+  });
 
 // Once a task reaches one of these, no later callback may change it. Without this
 // guard, a retried POST (backendApi.js's withRetry fires after a dropped response —
@@ -156,8 +167,8 @@ const callbackSchema = z
 // state-changing logic below: a duplicate 'submitted' callback would create a
 // SECOND Application row for the same job, and a stale 'failed' retry arriving late
 // could downgrade a real success into a false failure — the exact scenario that
-// makes retrying reportResult() safe or unsafe. 'paused_captcha'/'running'/'queued'
-// are deliberately excluded so real progressions (e.g. paused_captcha → submitted)
+// makes retrying reportResult() safe or unsafe. 'paused_human'/'running'/'queued'
+// are deliberately excluded so real progressions (e.g. paused_human → submitted)
 // still work. 'unknown_outcome' (set only by applyBotSweep.js, never by a worker
 // callback — see that file) is included here too: no legitimate callback should
 // ever target a task in that state, so protecting it from casual overwrite is
@@ -170,7 +181,7 @@ const TERMINAL_STATUSES = new Set([
 router.post('/apply-bot/tasks/:id/callback', requireApplyBotSecret, async (req, res) => {
   const parsed = callbackSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
-  const { status, failureClass, failureReason, fieldsFilled, confidenceScore, screenshotKeys, sessionState } = parsed.data;
+  const { status, pauseReason, failureClass, failureReason, fieldsFilled, confidenceScore, screenshotKeys, sessionState } = parsed.data;
 
   const task = await prisma.applyTask.findUnique({ where: { id: req.params.id }, include: { job: true } });
   if (!task) return res.status(404).json({ error: 'Task not found' });
@@ -180,18 +191,19 @@ router.post('/apply-bot/tasks/:id/callback', requireApplyBotSecret, async (req, 
     return res.json({ ok: true, alreadyTerminal: true, status: task.status });
   }
 
-  const isPaused = status === 'paused_captcha';
+  const isPaused = status === 'paused_human';
   await prisma.applyTask.update({
     where: { id: task.id },
     data: {
       status,
+      pauseReason: isPaused ? pauseReason : null,
       failureClass: failureClass || null,
       failureReason: failureReason || null,
       fieldsFilled: fieldsFilled || undefined,
       confidenceScore: confidenceScore ?? undefined,
       screenshotKeys: screenshotKeys || undefined,
-      captchaDetectedAt: status === 'paused_captcha' ? new Date() : undefined,
-      captchaSolvedAt: task.status === 'paused_captcha' && !isPaused ? new Date() : undefined,
+      captchaDetectedAt: status === 'paused_human' ? new Date() : undefined,
+      captchaSolvedAt: task.status === 'paused_human' && !isPaused ? new Date() : undefined,
       completedAt: isPaused ? undefined : new Date(),
     },
   });

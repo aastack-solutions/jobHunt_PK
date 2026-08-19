@@ -19,20 +19,17 @@ app.get('/health', (req, res) => {
 });
 
 const port = parseInt(process.env.PORT || '8100', 10);
-app.listen(port, () => {
+const server = app.listen(port, () => {
   logger.info(`apply-bot listening on port ${port}`);
   // Worker started only after the server is bound — never at module scope.
   const { createApplyBotWorker } = require('./worker');
   const worker = createApplyBotWorker();
 
-  // TODO(F7): mount the live-view WS server here, same after-listen timing as the
-  // worker above — e.g. `const { attachLiveView } = require('./liveView');
-  // attachLiveView(server);` (capture app.listen()'s return value as `server`
-  // first). Deliberately NOT wired in yet: liveView.js requires the `ws` package,
-  // which is listed in package.json but not yet installed (`npm install` hasn't
-  // run in this environment) — requiring it here unconditionally would break this
-  // service's startup entirely until that install happens. Wire it in only once
-  // `npm install` has actually been run and F7 is being implemented for real.
+  // Live-view WS server, same after-listen timing as the worker above. Wired in
+  // 2026-08-19 (F7) now that `npm install` has actually run and the `ws` package
+  // is present.
+  const { attachLiveView } = require('./liveView');
+  attachLiveView(server);
 
   // Graceful shutdown: worker.close() stops accepting new jobs and waits for the
   // CURRENT job to actually finish (it does not kill it) before returning — this is

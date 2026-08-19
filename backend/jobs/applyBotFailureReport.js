@@ -18,7 +18,7 @@ async function runApplyBotFailureReport() {
   // so the queries and this stub don't drift apart:
 
   // 1. Overall success rate: submitted+shadow_complete / everything resolved
-  //   (exclude queued/running/paused_captcha — they haven't resolved yet).
+  //   (exclude queued/running/paused_human — they haven't resolved yet).
   const successRate = null; // TODO: prisma.applyTask.count() x2, compute the ratio
 
   // 2. Failure-class breakdown — the single most useful query, tells you WHERE

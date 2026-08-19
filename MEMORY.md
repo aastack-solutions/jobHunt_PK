@@ -37,7 +37,7 @@ touching what.
 | F2 | Backend orchestration API (claim/callback/select) | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon+Upstash — all 10 test-plan items pass; found & fixed a real bug (bullConnection.js dropped TLS for rediss:// — hung every BullMQ queue, not just this one) |
 | F3 | apply-bot service scaffold & worker runtime | ✅ Done, verified (2 items env-blocked) | Claude (session) | Verified 2026-08-19 locally (no Docker) — full worker pipeline, TIMEOUT deadline, maxStalledCount:0 all confirmed live; docker build (no Docker) and real SIGTERM delivery (Windows limitation) need the actual Railway deploy |
 | F4 | Lever adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — name/email/resume selectors confirmed correct, CAPTCHA (hCaptcha) confirmed present on all 5 (resolves prior open question), 2 real bugs found & fixed (locateSubmit selector, isAlreadySolved textarea-vs-input check) |
-| F5 | Greenhouse adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA is the expected common case, not an edge case; login-page detection now automatic |
+| F5 | Greenhouse adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings on the new job-boards.greenhouse.io domain — selectors correct as-is (no code bug found), CAPTCHA confirmed present on all 5 (1 only post-fill, confirming the dual pre/post check matters), hydration-timing question resolved (no wait needed) |
 | F6 | Ashby adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA presence unconfirmed by research; login-page detection now automatic |
 | F7 | CAPTCHA / bot-challenge live-view | 🔴 Not started | Unassigned | Scope grew: must also cover email-verification challenges AND make TASK_DEADLINE_MS pause-aware (see Decisions Log 2026-08-17) |
 | F8 | Generic engine (non-ATS sources) | 🔴 Not started, gated off | Unassigned | `APPLY_BOT_GENERIC_ENABLED=false` — don't enable until built |
@@ -53,6 +53,82 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F5 verified against 5 real live Greenhouse postings; domain migration caught, hydration question resolved, no code bugs found
+Branch: `f5-greenhouse-adapter` (branched from `master` after merging F4 in — `git
+log --oneline -3` checked immediately after `git checkout -b` this time, per the
+process note in F4's entry).
+
+**Domain migration caught before wasting the whole session on dead postings**: the
+adapter's own comments and this test plan both assumed `boards.greenhouse.io`.
+5 real job IDs found via search (Applied Intuition, ZipRecruiter, Invisible Tech,
+tastytrade, Sourcegraph) ALL redirected to `job-boards.greenhouse.io/<company>?error=true`
+— Greenhouse has fully migrated domains, and the old one now just error-redirects
+rather than 404ing cleanly (would have looked like "all 5 test postings happened to
+be dead" if not investigated further). Found live postings by visiting each
+company's actual `job-boards.greenhouse.io` board page directly instead of trusting
+stale search-indexed job IDs.
+
+**Selectors verified correct as-is — no code bug found here** (unlike F4's Lever
+adapter, which had 2 real bugs): the new React-rendered board dropped `name`
+attributes entirely (every input's `name` is empty) but kept the same `id` values
+(`#first_name`, `#last_name`, `#email`, `#resume`) that the adapter already checks
+first. Confirmed on all 5 postings via two independent checks per posting: the
+adapter's own return value AND a direct DOM read of the actual filled values.
+
+**Resume-upload false alarm, caught and resolved by digging one level deeper**:
+initial testing showed `resumeFileCount: 0` after fill on all 5 postings — looked
+like a serious bug (silent upload failure) at first. Investigation found the real
+cause: Greenhouse's React form unmounts/replaces the `#resume` `<input>` element
+once a file is accepted (confirmed via `document.querySelectorAll('#resume')`
+returning empty afterward, while the accepted filename WAS present in the
+page's rendered text) — a UI implementation detail, not a failure. Re-tested by
+checking for the filename in the page body instead, which needed to be
+poll-based rather than a fixed delay (a fixed 1000ms wait found the filename on
+only 2/5 postings — timing, not failure, since the re-render is async; polling
+up to 5s found it on all 5). Worth recording precisely because this is exactly
+the kind of thing that could have shipped as an incorrectly-reported "bug fixed"
+if the first (misleading) result had been trusted without digging further.
+
+**CAPTCHA confirmed present on all 5 — and caught a real "sometimes invisible" case
+live**: reCAPTCHA (`iframe[src*="recaptcha"]`) present on all 5. On 4/5 it rendered
+immediately on page load; on 1 (ZipRecruiter) `detectCaptcha()` returned
+`detected: false` *before* `fillApplication()` ran but `detected: true` *after* —
+a real, directly-observed instance of the plan's "sometimes invisible, triggered
+by behavioral signals" concern, not just a theoretical risk. Confirms
+`worker.js`'s existing design (checking `detectCaptcha()` both before AND after
+`fillApplication()`) is genuinely load-bearing, not defensive-but-unnecessary —
+the pre-fill-only check alone would have missed this case entirely.
+
+**Hydration-timing question resolved: no wait needed.** Tested with
+`worker.js`'s exact real navigation option (`page.goto(url, { waitUntil:
+'domcontentloaded' })`, no `networkidle`, no extra sleep) immediately followed by
+`fillApplication()` — filled correctly on the first attempt every time. Playwright's
+locator-based `.fill()`/`.setInputFiles()` calls already have built-in
+actionability auto-waiting, which is what makes this safe without an explicit
+`waitForSelector`. No adapter change made.
+
+**Custom questions confirmed never guessed at**: every posting had multiple
+custom `question_NNNN` fields (interview logistics, work authorization, etc.) —
+none were ever filled. Precision note added to the file's own header and to
+`TEST_PLAN.md`: the adapter's `unmapped`-recording behavior is scoped to
+`phone`/`linkedin_url`/`portfolio_url` specifically (confirmed present as
+*required* fields on 4/5 postings, direct evidence for the still-open
+phone/LinkedIn schema question above) — other custom questions are silently
+left untouched rather than explicitly flagged `unmapped`, which is the same
+never-guess safety property, just without a label in the JSON for those.
+
+**Not exercised**: the login-page/AUTH-failure regression against a real gated
+board — all 5 tested were guest-apply, no login required, same situation as F4.
+The generic `looksLikeLoginPage()` mechanism is fixture-tested (F10, passing) and
+was confirmed to correctly return `false` (not a false positive) against all 5
+real pages.
+
+**Why**: same bar as F1-F4. Two things worth calling out specifically about this
+session: catching the domain migration before it silently invalidated the whole
+verification effort, and not stopping at the first (misleading) resume-upload
+result — a real bug and a false alarm can look identical from the first data
+point; the difference only shows up once you check the actual cause.
 
 ### 2026-08-19 — F4 verified against 5 real live Lever postings; CAPTCHA question resolved, 2 real bugs fixed
 Branch: `f4-lever-adapter` (branched from `master` after merging F3 in).

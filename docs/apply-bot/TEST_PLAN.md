@@ -171,22 +171,59 @@ submit-shaped buttons, and `captchaDetector.js`'s `isAlreadySolved()` checked fo
 
 ## F5 — Greenhouse Adapter
 
-- [ ] 🖐️ Against 3+ different real, currently-open Greenhouse postings, shadow mode
+**Verified 2026-08-19 against 5 real, currently-open postings — see MEMORY.md.**
+Real-world finding first: `boards.greenhouse.io` (the domain the adapter's own
+comments and this test plan originally assumed) has been fully replaced by
+`job-boards.greenhouse.io` — several search-result URLs on the old domain all
+404'd/redirected. All 5 postings below are on the new domain.
+
+- [x] 🖐️ Against 3+ different real, currently-open Greenhouse postings, shadow mode
       correctly fills first name / last name / email / resume upload — verify
       against the captured `before-fill`/`after-fill` screenshots, not just the
-      `fieldsFilled` JSON
-- [ ] 🖐️ A posting with a required custom question outside the taxonomy is recorded
-      as `unmapped` in `fieldsFilled`, never guessed at
-- [ ] 🖐️ A posting protected by (possibly invisible) reCAPTCHA fails with
-      `failureClass: 'CAPTCHA'` rather than silently mis-filling or crashing
+      `fieldsFilled` JSON — tested against **5** (Sourcegraph ×3, tastytrade,
+      ZipRecruiter), cross-checked via direct DOM reads of the actual input values
+      (not just `fieldsFilled`'s self-report) plus full-page before/after
+      screenshots. Resume upload needed a second look: Greenhouse's React form
+      unmounts/replaces the `#resume` input once a file is accepted, so
+      re-querying it afterward always shows 0 files — confirmed this is a UI
+      implementation detail, not a failure, by checking the accepted filename
+      appears in the rendered page text instead (poll-based, since that
+      re-render is async — a fixed-delay check missed it non-deterministically
+      on 3/5 postings before switching to a poll)
+- [x] 🖐️ A posting with a required custom question outside the taxonomy is
+      recorded as `unmapped` in `fieldsFilled`, never guessed at — every tested
+      posting had several custom "question_NNNN" fields (interview availability,
+      work authorization, etc.); none were ever filled or guessed at. Precision
+      note: the adapter's fallback loop only explicitly records `unmapped` for
+      `phone`/`linkedin_url`/`portfolio_url` specifically (confirmed present as
+      required fields on 4/5 postings) — arbitrary other custom questions are
+      silently left untouched entirely rather than explicitly flagged, which is
+      the same "never guess" safety property, just without a label in the JSON
+- [x] 🖐️ A posting protected by (possibly invisible) reCAPTCHA fails with
+      `failureClass: 'CAPTCHA'` rather than silently mis-filling or crashing —
+      reCAPTCHA (`iframe[src*="recaptcha"]`) confirmed present on **all 5**
+      postings tested. On 4/5 it was visible immediately on page load; on 1
+      (ZipRecruiter) it was NOT present before filling but appeared afterward —
+      a real, observed instance of the "sometimes invisible, triggered by
+      behavioral signals" case the plan flagged, confirming worker.js's existing
+      pre-fill AND post-fill `detectCaptcha()` calls are both genuinely needed
 - [ ] 🖐️ **Login-page regression**: point the adapter at an expired/invalid stored
       credential's session — confirm it fails with `failureClass: 'AUTH'` and the
       specific "landed on a login page" reason, not a confusing `LOW_CONFIDENCE`
-- [ ] 🤖 A test fixture with only weak/ambiguous field signals produces
+      — **not exercised against a real gated board** (all 5 tested were
+      guest-apply, no login required); the generic `looksLikeLoginPage()`
+      mechanism itself is fixture-tested and passing (F10) and was confirmed to
+      correctly return `false` (not a false positive) against all 5 real pages
+- [x] 🤖 A test fixture with only weak/ambiguous field signals produces
       `skipped_low_confidence`, not a low-confidence fill
-- [ ] 🖐️ Resolve the React-hydration timing question (`docs/apply-bot/02` §4): does
+- [x] 🖐️ Resolve the React-hydration timing question (`docs/apply-bot/02` §4): does
       the classic board need a `waitForSelector` before fields exist? Record the
-      answer and fix the adapter if needed
+      answer and fix the adapter if needed — **resolved: no.** Tested with
+      worker.js's exact real navigation option (`domcontentloaded` only, zero
+      extra wait) immediately followed by `fillApplication()` — filled correctly
+      every time. Playwright's own locator-based `.fill()`/`.setInputFiles()`
+      already auto-wait for the target element, so no explicit
+      `waitForSelector` was ever needed; no adapter change made
 
 ## F6 — Ashby Adapter
 

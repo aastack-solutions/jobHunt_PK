@@ -38,7 +38,7 @@ touching what.
 | F3 | apply-bot service scaffold & worker runtime | ✅ Done, verified (2 items env-blocked) | Claude (session) | Verified 2026-08-19 locally (no Docker) — full worker pipeline, TIMEOUT deadline, maxStalledCount:0 all confirmed live; docker build (no Docker) and real SIGTERM delivery (Windows limitation) need the actual Railway deploy |
 | F4 | Lever adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — name/email/resume selectors confirmed correct, CAPTCHA (hCaptcha) confirmed present on all 5 (resolves prior open question), 2 real bugs found & fixed (locateSubmit selector, isAlreadySolved textarea-vs-input check) |
 | F5 | Greenhouse adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings on the new job-boards.greenhouse.io domain — selectors correct as-is (no code bug found), CAPTCHA confirmed present on all 5 (1 only post-fill, confirming the dual pre/post check matters), hydration-timing question resolved (no wait needed) |
-| F6 | Ashby adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA presence unconfirmed by research; login-page detection now automatic |
+| F6 | Ashby adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — 2 real bugs found & fixed (a genuine field-scan hydration-timing race, unlike F5's Greenhouse where none was needed; and a click-through-to-/application form flow); CAPTCHA not observed on any of the 5 (unlike F4/F5's 100%) |
 | F7 | CAPTCHA / bot-challenge live-view | 🔴 Not started | Unassigned | Scope grew: must also cover email-verification challenges AND make TASK_DEADLINE_MS pause-aware (see Decisions Log 2026-08-17) |
 | F8 | Generic engine (non-ATS sources) | 🔴 Not started, gated off | Unassigned | `APPLY_BOT_GENERIC_ENABLED=false` — don't enable until built |
 | F9 | Failure measurement & alerting | 🟡 Partially built | Unassigned | Staleness/needs-review dashboard alerting done 2026-08-17; per-adapter success-rate reporting still open |
@@ -53,6 +53,64 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F6 verified against 5 real live Ashby postings; 2 real bugs found (a genuine hydration race this time, plus a click-through flow), CAPTCHA question resolved
+Branch: `f6-ashby-adapter` (branched from `master` after merging F5 in; `git log
+--oneline -3` checked immediately after `git checkout -b`, per the now-standard
+process check).
+
+Found 5 real, currently-open postings across 4 companies' Ashby boards (Valon,
+Ashby's own careers page, Ramp ×2, Linear) by visiting each board directly rather
+than trusting search-indexed job IDs (learned from F5's domain-migration close call).
+
+**Bug #1 — a genuine hydration-timing race, not a false alarm this time.**
+F5's equivalent test (Greenhouse, zero extra wait after `domcontentloaded`,
+immediate `fillApplication()` call) passed instantly with no fix needed, because
+Greenhouse's adapter uses Locator-based `.fill()`/`.setInputFiles()` calls, which
+auto-wait for their target element. Ashby's adapter is built entirely on
+`fieldTaxonomy.js`'s generic engine, whose `scanFields()` runs a single, synchronous
+`page.evaluate()` — no auto-wait at all. Running the identical test against Ashby
+found **zero fields** on the inline-form postings. This is the real, not just
+theoretical, version of the risk F6's own plan section flagged ("Ashby's form is
+more dynamically-rendered... prioritize getting real field-label data from a live
+posting"). **Fix**: `ensureApplicationFormVisible()` now explicitly
+`waitForSelector`s the name field before scanning. Re-verified against the exact
+same zero-wait scenario afterward — filled correctly every time.
+
+**Bug #2 — some postings require a click-through to a separate `/application`
+page.** 2 of the 5 postings tested (Ashby's own board, one Ramp posting) don't
+render the form inline on the job listing page at all — an "Apply for this Job"
+link/button must be clicked first, which navigates to a `.../application` URL
+where the actual form lives. Without handling this, `fillApplication()` would scan
+an essentially empty page and abstain with `skipped_low_confidence` — safe, but a
+missed application that was one click away, not a crash or a wrong guess. Fixed by
+the same `ensureApplicationFormVisible()` function: if the name field isn't found
+within 5s, look for and click the "Apply for this Job" control, then wait again
+(10s) before giving up. Both fixes share one function since the wait-then-maybe-
+click sequence naturally covers both cases without duplicating logic.
+
+**Field-matching itself needed no changes**: `fieldTaxonomy.js`'s existing
+`SYNONYMS` correctly matched all of Ashby's real field labels ("Phone", "LinkedIn
+Profile", "LinkedIn  Profile" — note the real double-space typo on one posting,
+still matched fine since matching is substring-based —, "Website", "Github") via
+label text on all 5 postings, no additions needed.
+
+**CAPTCHA question resolved — not observed, opposite finding from F4/F5**: unlike
+Lever and Greenhouse (both 100% CAPTCHA-present across every posting tested in
+their own sessions), none of the 5 Ashby postings tested showed any CAPTCHA
+widget. Genuinely new information (the plan explicitly flagged this as unconfirmed
+by research) — recorded as a real finding from this specific sample, not a
+guarantee about every Ashby-hosted board.
+
+**Not exercised**: the login-page/AUTH-failure regression against a real gated
+board — same situation as F4/F5, all 5 tested were guest-apply.
+
+**Why**: same bar as F1-F5. Worth noting explicitly this time: F5's timing test
+was a genuine "nothing to fix" result and F6's was a genuine "real bug, fix
+required" result for the equivalent question on a different adapter — the value
+of actually running the test each time is exactly that you don't know which
+outcome you'll get until you do, even when the underlying concern (React
+hydration timing) sounds the same across adapters.
 
 ### 2026-08-19 — F5 verified against 5 real live Greenhouse postings; domain migration caught, hydration question resolved, no code bugs found
 Branch: `f5-greenhouse-adapter` (branched from `master` after merging F4 in — `git
@@ -663,8 +721,11 @@ first time someone actually fills in a TODO.
   CAPTCHA-solving-doesn't-reliably-work-on-Greenhouse finding above may apply to
   Browserbase's auto-solve too; would need direct testing, not assumed). **Unresolved
   — revisit once F5/F6 have real failure-rate data (see F9).**
-- Whether Ashby application forms present CAPTCHAs in practice — not confirmed by
-  research. **Unresolved — first real F6 test run will answer this.**
+- ~~Whether Ashby application forms present CAPTCHAs in practice — not confirmed by
+  research.~~ **Resolved 2026-08-19 (F6)**: not observed on any of 5 real postings
+  tested — see that day's F6 Decisions Log entry. Not proof no Ashby board ever
+  uses one, just the first real data point (same caveat F4/F5 noted for their own
+  positive findings, just inverted here).
 
 ---
 

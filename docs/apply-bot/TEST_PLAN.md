@@ -227,19 +227,50 @@ comments and this test plan originally assumed) has been fully replaced by
 
 ## F6 — Ashby Adapter
 
-- [ ] 🖐️ Against 3+ different real, currently-open Ashby postings, shadow mode
-      correctly fills the required fields — verify against screenshots
-- [ ] 🖐️ A required custom question outside the taxonomy is recorded `unmapped`,
-      never guessed
-- [ ] 🖐️ Determine (previously unconfirmed by research) whether Ashby postings
+**Verified 2026-08-19 against 5 real, currently-open postings — see MEMORY.md.**
+
+- [x] 🖐️ Against 3+ different real, currently-open Ashby postings, shadow mode
+      correctly fills the required fields — verify against screenshots — tested
+      against **5** (Valon, Ashby itself, Ramp ×2, Linear), each cross-checked via
+      a direct DOM read of the actual filled values (not just `fieldsFilled`'s
+      self-report) and the resume filename confirmed present in the rendered page
+- [x] 🖐️ A required custom question outside the taxonomy is recorded `unmapped`,
+      never guessed — phone/LinkedIn/portfolio/GitHub all correctly recorded
+      `unmapped` wherever present, never filled with wrong data; other custom
+      questions (not in the `phone`/`linkedin_url`/`portfolio_url` check list)
+      silently left untouched, same precision note as F5
+- [x] 🖐️ Determine (previously unconfirmed by research) whether Ashby postings
       commonly present a CAPTCHA — record the finding, build detection/handling
-      accordingly if so
+      accordingly if so — **not observed on any of the 5 postings tested**,
+      unlike Lever and Greenhouse (100% in their own sessions). No detection
+      changes needed since none was seen; not proof no Ashby board ever uses one
 - [ ] 🖐️ Login-page regression (same as F5-06) — confirm `AUTH` failure on a stale
-      session rather than a confusing fill attempt
-- [ ] 🤖 Low-confidence abstain regression (same as F5-05)
-- [ ] 🖐️ Given Ashby's heavier React rendering, specifically verify field-scan
+      session rather than a confusing fill attempt — **not exercised against a
+      real gated board** (all 5 tested were guest-apply); the generic
+      `looksLikeLoginPage()` mechanism is fixture-tested (F10, passing) and
+      confirmed to correctly return `false` against all 5 real pages
+- [x] 🤖 Low-confidence abstain regression (same as F5-05)
+- [x] 🖐️ Given Ashby's heavier React rendering, specifically verify field-scan
       timing — confirm `fieldTaxonomy.scanFields()` isn't running before the form
-      has actually rendered
+      has actually rendered — **confirmed this was a real bug, not a theoretical
+      risk**: calling `fillApplication()` immediately after `domcontentloaded`
+      (worker.js's actual real navigation option, zero extra wait) found **zero
+      fields** on Ashby's inline-form postings (the equivalent Greenhouse test,
+      F5, passed instantly with no fix needed — Ashby's `scanFields()` uses a raw
+      `page.evaluate()` with no built-in auto-wait, unlike Greenhouse/Lever's
+      Locator-based fill calls). Fixed via an explicit `waitForSelector` in
+      `ensureApplicationFormVisible()`; re-verified against the exact same
+      zero-extra-wait scenario afterward — all 3 re-tested postings (1 inline,
+      2 click-through) filled correctly
+
+**Second real bug found and fixed alongside the timing one**: 2 of the 5 postings
+(Ashby's own board, one Ramp posting) render the application form on a separate
+`/application` sub-path reached only by clicking an "Apply for this Job" control —
+`fillApplication()` used to assume the form was always already on the page, so it
+would scan an empty page on those and abstain with `skipped_low_confidence`,
+never reaching a real, fillable form one click away. Fixed by the same
+`ensureApplicationFormVisible()` function (falls back to finding and clicking the
+control if the name field isn't found within a few seconds).
 
 ## F7 — CAPTCHA / Bot-Challenge Live-View
 

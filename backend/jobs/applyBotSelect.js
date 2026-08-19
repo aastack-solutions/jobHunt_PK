@@ -156,4 +156,7 @@ async function runApplyBotSelection() {
   return { enabled: true, users: users.length, created, mode, swept, report };
 }
 
-module.exports = { runApplyBotSelection, isEnabled, KILL_SWITCH_KEY };
+// selectForUser is exported for tests only: runApplyBotSelection() loops over EVERY
+// user, which a test cannot safely do against a shared database. Not used elsewhere
+// in production code.
+module.exports = { runApplyBotSelection, selectForUser, isEnabled, KILL_SWITCH_KEY };

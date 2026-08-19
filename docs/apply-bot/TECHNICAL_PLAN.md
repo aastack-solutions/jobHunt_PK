@@ -72,6 +72,11 @@ backend/
 │   ├── applyBotPlatform.test.js          ✅[F10]
 │   ├── applyTaskCallback.test.js         🏗️[F10] — skipped until a live DB exists
 │   ├── applyBotSweep.test.js             🏗️[F10] — skipped until a live DB exists
+│   ├── applyBotSelect.test.js            ✅[F10] — selection safety rules: daily cap,
+│   │                                            dedupe, credential requirement, the
+│   │                                            F8 generic gate, F8a URL rewrite.
+│   │                                            Added to this manifest 2026-08-19
+│   │                                            BEFORE the file was created.
 │   └── applyBotFailureReport.test.js     ✅[F9] — F9's per-adapter/failure-class
 │                                               numbers against seeded fixture rows;
 │                                               skipped until a live DB exists.
@@ -977,12 +982,40 @@ hand.
 
 ## F10 — Testing & Verification Harness
 
-**Status**: 🟡 partially built, 2026-08-17 — everything not requiring a live
-database or a real browser is done and passing (37 tests, `npm test` in either
-`backend/` or `backend/apply-bot/`, using Node's built-in test runner —
-`node --test`, zero new dependencies). What's still open: the DB-dependent
-integration smoke test (item 4 below) and anything needing a real Playwright
-session (fixture-HTML field-matching tests, item 3).
+**Status**: ✅ done and verified 2026-08-19. Every item below is built and running:
+**78 passing / 0 skipped / 0 failing in 48s** with a live `DATABASE_URL`, and 57
+passing / 8 skipped / 0 failing without one. Still zero new dependencies — Node's
+built-in runner throughout.
+
+Three things closed the remaining gaps: Playwright is actually installed now (item 3),
+the callback test starts its own server instead of requiring one (item 4), and
+`applyBotSelect.js` — which a coverage run exposed at **16.98%** — got a real suite.
+
+**Coverage**, via `npm run test:coverage` (`--experimental-test-coverage`):
+
+| Area | line % | branch % |
+|---|---|---|
+| `applyBotPlatform.js` | 97.80 | 96.30 |
+| `genericAdapter.js` | 97.12 | 75.86 |
+| `applyBotFailureReport.js` | 89.41 | 84.00 |
+| `applyBotSweep.js` | 87.50 | 80.00 |
+| `ssrfGuard.js` | 86.18 | 88.24 |
+| `fieldTaxonomy.js` | 77.78 | 85.71 |
+| `applyBotSelect.js` | 69.75 (was 16.98) | 100.00 |
+| `internal.js` | 65.41 | 60.00 |
+| **whole backend** | **59.20** | **82.49** |
+
+The whole-backend line figure is worth reading carefully rather than as a grade: the
+apply-bot feature files above are all 65-98%, and the number is dragged down by
+pre-existing code **outside this feature** that has never had tests — `jobFetcher.js`
+(27%), `matchingEngine.js` (36%), `storageService.js` (42%), `dailyJobFetch.js` (17%).
+Raising those is real work, but it is not F10, and padding this feature's tests would
+not move it either.
+
+Deliberately still uncovered inside the feature: `runApplyBotSelection()`'s
+all-users loop (tests target `selectForUser` instead, since looping every user in a
+shared database is not something a test may do), and the adapters' browser-driving
+halves, which need a live posting rather than a fixture.
 **Depends on**: nothing to *start* (crypto/platform-resolution tests need only F1/F2,
 already built). **Wave 1 — start immediately, ideally before anything else.**
 **Shares files with**: none directly — test files only, read the adapter files as
@@ -1034,9 +1067,10 @@ Worth doing in parallel with Track A from day one rather than "after."
 
 **Definition of done**: `npm test` (`node --test`, wired into both
 `backend/package.json` and `backend/apply-bot/package.json` — no new dependency)
-covers all items above and runs in under a minute — currently true for the 37
-browser-free/DB-free tests; the remaining DB- and browser-dependent items complete
-this once F1's migration is actually applied and Playwright is actually installed.
+covers all items above and runs in under a minute. **Met 2026-08-19**: 78 passing,
+0 skipped, 0 failing, 48s. Both remaining blockers named in the original wording are
+gone — F1's migration is applied and Playwright is installed — and the one test that
+needed a hand-started backend now starts its own.
 
 ---
 

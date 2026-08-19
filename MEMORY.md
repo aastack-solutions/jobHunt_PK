@@ -42,9 +42,9 @@ touching what.
 | F7 | CAPTCHA / bot-challenge live-view | ✅ Done, verified (2 items narrower-scope) | Claude (session) | Verified 2026-08-19 against a real hCaptcha — full pause→live-view→resume cycle confirmed live, critical TASK_DEADLINE_MS pause-aware regression confirmed with real evidence, 1 real bug fixed (WS auth accepted-then-closed instead of never-accepted). Mouse/keyboard round-trip and email-verification not exercised against real occurrences — see TEST_PLAN.md |
 | F8 | Generic engine (non-ATS sources) | ✅ Done, verified | Claude (session) | F8a + F8b built and verified against real postings; `genericAdapter.js` implemented. F8c researched and deliberately closed — 3/16 aggregator postings reachable, and 2 of those 3 land on adapters we already have. `APPLY_BOT_GENERIC_ENABLED` stays false as a *conclusion*, not a gap |
 | F9 | Failure measurement & alerting | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon — all 4 test-plan items pass. Remaining half built (`jobs/applyBotFailureReport.js`); 1 real design bug found & fixed during verification (report skipped entirely when the kill switch was off). Item 2 verified at logic level only — frontend has no test tooling |
-| F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 64 passing / 1 skipped / 0 failing as of 2026-08-19 end of day (43 total at start of day; +5 F9, +5 F8b, +11 F8a/F8c). Playwright is now installed locally, so F10 items 3 and the looksLikeLoginPage stub finally RUN — the one remaining skip is the callback test, which needs a running backend, not a browser |
+| F10 | Testing & verification harness | ✅ Done, verified | Claude (session) | 78 passing / 0 skipped / 0 failing in 48s (43 total at start of 2026-08-19). Last blockers cleared: Playwright installed, callback test now starts its own server, and `applyBotSelect.js` went 16.98% -> 69.75% line / 100% branch. `npm run test:coverage` added |
 | F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
-| F12 | Live-mode rollout & safety ops | 🔴 Blocked on F10 only | Unassigned | F5/F6/F9 now all done — F10's Playwright-dependent items are the last build blocker. Still also requires: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17) |
+| F12 | Live-mode rollout & safety ops | 🟡 Unblocked, not started | Unassigned | F5/F6/F8/F9/F10 all done now — no build blockers left. What remains is F12 own checklist: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17), kill-switch drill, and the first real live-mode application |
 | F13 | Unified application tracking (source, resume link, ghosted) | ✅ Built, ⚠️ untested | — | Closes the pre-existing "Apply button doesn't track" gap too — see Decisions Log 2026-08-17 |
 | F14 | Email-based application status auto-detection | 🔵 Researched + specified, not built | Unassigned | User opted in to scoping this — needs a real Google Cloud OAuth app before any code can be tested |
 
@@ -53,6 +53,63 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F10 completed: the suite now runs itself, and the riskiest file in the feature finally has tests
+Branch: `f10-testing-harness` (off `f8-generic-engine`, since F8/F9 are not merged to
+`master` yet and this touches the same test tree).
+
+**The finding that shaped the work: a test nobody was running.**
+`applyTaskCallback.test.js` required somebody to have started a backend by hand
+(`npm run dev`) in another terminal before `npm test`. In practice that almost never
+happened, so the one test guarding callback idempotency — the guard against a
+duplicate `submitted` callback creating a second `Application` row — quietly skipped
+on essentially every run while still *looking* present in the suite. It now mounts the
+`internal.js` router on a throwaway server on an ephemeral port, so a live
+`DATABASE_URL` is the only external thing it needs. `TEST_BASE_URL` still points it at
+a real backend for anyone wanting the full middleware stack. Deliberately does **not**
+require `src/app.js`: that binds port 5000 and starts the scheduler and AI workers as
+an import side effect.
+
+**The second finding came from actually measuring.** `npm run test:coverage`
+(`--experimental-test-coverage`, no new dependency) put `applyBotSelect.js` at
+**16.98%** line coverage — the file holding the daily cap, both dedupe rules, the
+credential requirement and the F8 generic gate. Every rule that stops the bot doing
+something it should not, with no automated test at all, on the file F12's live-mode
+rollout depends on most. Now **69.75% line / 100% branch** via 11 tests covering the
+cap, the already-capped case, in-flight dedupe, `unknown_outcome` blocking a job
+indefinitely, company dedupe case-insensitively, missing and inactive credentials, the
+F8 gate in both positions, the F8a rewrite, non-https refusal and inactive jobs.
+
+`selectForUser` was exported to make that possible — `runApplyBotSelection()` loops
+over every user in the database, which no test may do against a shared one. Marked in
+the source as exported for tests only.
+
+**Honest reading of the whole-backend number.** Overall line coverage is 59.20%
+(branch 82.49%), which is under the 80% line target. That is not the apply-bot feature:
+its files sit at 65-98%. The number is dragged down by pre-existing code outside this
+feature that has never had tests — `jobFetcher.js` 27%, `matchingEngine.js` 36%,
+`storageService.js` 42%, `dailyJobFetch.js` 17%. Raising those is real work and worth
+doing, but it is not F10, and padding this feature's tests would not move it.
+
+**Also closed:** the "blocked on a real Playwright install" item. Chromium is installed,
+so `fieldTaxonomy.bestMatch` against a fixture DOM and `looksLikeLoginPage` against
+fixture pages both run for real. The suite now has **zero skips** with a database
+present.
+
+**One self-inflicted failure worth recording**, since it is exactly the class of thing
+this ticket exists to catch: the first draft of the new tests invented
+`ApplyCredential` field names (`passwordCiphertext`/`passwordIv`/`passwordAuthTag`)
+instead of reading the schema, and 9 tests failed at once on a single root cause. The
+real fields are `credentialEncrypted`/`iv`/`authTag`, all `Bytes`. They are seeded with
+dummy bytes on purpose — `selectForUser` only checks that an active row exists and
+never decrypts, so encrypting for real would make these tests depend on
+`APPLY_BOT_MASTER_KEY` and fail for a reason unrelated to what they assert.
+
+**Verification.** With `DATABASE_URL`: 78 passing, 0 skipped, 0 failing, 48s — inside
+the "under a minute" definition of done. Without it: 57 passing, 8 skipped, 0 failing,
+5s, so a plain CI checkout is unaffected. Test rows are seeded per-test under their own
+throwaway user and deleted in a `finally`; enqueued BullMQ jobs are removed
+individually by `applyTaskId` rather than by draining the shared queue.
 
 ### 2026-08-19 — F8 completed: 611 misrouted jobs recovered, generic adapter implemented, F8c researched and closed
 Branch: `f8-generic-engine`. Follows the same day's scoping-pass entry below, which

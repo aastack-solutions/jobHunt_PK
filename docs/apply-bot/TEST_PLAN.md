@@ -426,12 +426,11 @@ running locally (branch `f9-failure-measurement`).
 
 - [x] 🤖 `npm test` exists and runs in under a minute — `node -r dotenv/config --test`
       (dotenv preload added 2026-08-19 so DB-dependent tests pick up `.env`
-      automatically when present), both `backend/` and `backend/apply-bot/`,
-      64 passing / 1 skipped / 0 failing as of 2026-08-19 end of day, up from 43
-      total at the start of that day (+5 from F9, +5 from F8b, +11 from F8a/F8c).
-      The single remaining skip is the callback test, which needs a running backend
-      rather than a browser — Playwright is installed now, so the two
-      browser-dependent stubs below actually run
+      automatically when present), both `backend/` and `backend/apply-bot/`.
+      **78 passing / 0 skipped / 0 failing in 48s** as of F10, up from 43 total at
+      the start of 2026-08-19 (+5 F9, +5 F8b, +11 F8a/F8c, +14 F10). With no
+      `DATABASE_URL` present it still passes clean: 57 passing / 8 skipped / 0
+      failing in 5s, so a plain CI checkout is unaffected
 - [x] 🤖 `cryptoService` round trip (incl. tampered-ciphertext and wrong-iv/authTag
       cases) — `backend/test/cryptoService.test.js`
 - [x] 🤖 `applyBotPlatform.resolvePlatform`/`requiresCredential` against real
@@ -446,8 +445,27 @@ running locally (branch `f9-failure-measurement`).
       `applyBotSweep`'s staleness thresholds (`backend/test/applyBotSweep.test.js`)
       — both self-skip gracefully when `DATABASE_URL`/a running backend aren't
       available, so `npm test` still passes clean in a DB-less environment
-- [ ] 🤖 **Blocked on a real Playwright install**: `fieldTaxonomy.bestMatch` against
-      a fixture HTML page, `looksLikeLoginPage` against fixture pages
+- [x] 🤖 ~~Blocked on a real Playwright install~~: `fieldTaxonomy.bestMatch` against
+      a fixture HTML page, `looksLikeLoginPage` against fixture pages — **unblocked
+      2026-08-19**, Playwright's Chromium is installed and both run for real (they
+      were the last remaining browser-dependent skips)
+- [x] 🤖 **The callback test no longer needs a backend started by hand.** It used
+      to require `npm run dev` in another terminal, which meant it silently skipped
+      on essentially every run — a test nobody was actually running. It now mounts
+      the `internal.js` router on a throwaway server on an ephemeral port, so a live
+      `DATABASE_URL` is the only external thing it needs. `TEST_BASE_URL` still
+      points it at a real backend when you want the full middleware stack
+- [x] 🤖 **`applyBotSelect.js`'s selection safety rules** — 11 tests in
+      `backend/test/applyBotSelect.test.js` covering the daily cap, the
+      already-capped case, in-flight dedupe, `unknown_outcome` blocking a job
+      indefinitely, company dedupe (case-insensitively), the missing- and
+      inactive-credential skips, the F8 generic gate in both positions, the F8a URL
+      rewrite, non-https refusal, and inactive jobs. Written because a coverage run
+      put this file — which holds every rule that stops the bot doing something it
+      should not — at **16.98%**; it is now **69.75% line / 100% branch**
+- [x] 🤖 **Coverage is measurable on demand**: `npm run test:coverage`
+      (`--experimental-test-coverage`, no new dependency). See the F10 section of
+      TECHNICAL_PLAN for the numbers and for what is deliberately still uncovered
 
 ## F11 — Credential & Session Management UX
 

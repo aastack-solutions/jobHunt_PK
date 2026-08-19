@@ -62,15 +62,22 @@ backend/
 ├── jobs/
 │   ├── applyBotSelect.js                 ✅[F2] selection + dedupe + cap + kill switch
 │   ├── applyBotSweep.js                  (existing — stale-task cleanup)
-│   ├── applyBotFailureReport.js          🏗️[F9] — per-adapter success-rate reporting
+│   ├── applyBotFailureReport.js          ✅[F9] — per-adapter success-rate reporting
 │   │                                          (filename decision made 2026-08-17;
-│   │                                          previously unnamed in this document)
+│   │                                          previously unnamed in this document;
+│   │                                          implemented 2026-08-19)
 │   └── emailStatusSync.js                🏗️[F14]
 ├── test/
 │   ├── cryptoService.test.js             ✅[F10]
 │   ├── applyBotPlatform.test.js          ✅[F10]
 │   ├── applyTaskCallback.test.js         🏗️[F10] — skipped until a live DB exists
-│   └── applyBotSweep.test.js             🏗️[F10] — skipped until a live DB exists
+│   ├── applyBotSweep.test.js             🏗️[F10] — skipped until a live DB exists
+│   └── applyBotFailureReport.test.js     ✅[F9] — F9's per-adapter/failure-class
+│                                               numbers against seeded fixture rows;
+│                                               skipped until a live DB exists.
+│                                               Added to this manifest 2026-08-19
+│                                               BEFORE the file was created, per the
+│                                               rule at the top of this section.
 └── apply-bot/                            separate Railway service, see F3
     ├── package.json / Dockerfile / .env.example
     ├── src/
@@ -840,9 +847,10 @@ resolve-the-real-destination-first step not yet designed).
 
 ## F9 — Failure Measurement & Alerting
 
-**Status**: 🟡 partially built (2026-08-17, Reliability Hardening pass) — the
-staleness/needs-review alerting half is done; the per-adapter success-rate reporting
-half is not.
+**Status**: ✅ done and verified (2026-08-19). The staleness/needs-review alerting
+half landed 2026-08-17 (Reliability Hardening pass); the per-adapter success-rate
+reporting half landed 2026-08-19 in `jobs/applyBotFailureReport.js`. All four of
+TEST_PLAN's F9 items verified against the real Neon database.
 **Depends on**: nothing (reads `ApplyTask` data that F1/F2 already produce).
 **Wave 1 — the remaining work can start immediately.** **Shares files with**: none —
 new files only.
@@ -853,19 +861,41 @@ new files only.
 job-fetch staleness banner. This closes the "is the pipeline quiet" and "is
 something stuck needing a human" visibility gaps — see "Reliability Hardening" §4.
 
-**What's still open**: `docs/apply-bot/03-failure-measurement.md`'s per-adapter
-success-rate and failure-class-breakdown queries — turning those into something
-that doesn't require manually running Prisma queries. Start with the cheapest
-version: a script (or a `SchedulerLog`-style entry written after each
-`applyBotSelect.js` run) that computes the breakdown and logs it via Winston. Only
-build actual dashboard UI for this once there's enough real volume for it to be more
-useful than reading logs.
+**What was built for the remaining half (2026-08-19)**: `runApplyBotFailureReport()`
+computes §03's §1 overall success rate, §2 abstain rate, §4 failure-class breakdown
+and §5 per-adapter success rate over a rolling window (default 7 days) in exactly
+two `groupBy` queries — one on `(adapterUsed, status)`, which the overall figures are
+derived from rather than re-queried, plus one on `failureClass`. It runs three ways:
+automatically at the end of every `applyBotSelect.js` run (on **both** sides of the
+kill switch, for the same reason the sweep is unconditional — a team that just
+disabled the bot after a bad week is exactly the team that still needs the numbers),
+on demand via `node -r dotenv/config jobs/applyBotFailureReport.js [windowDays]`, and
+readable after the fact from the `apply-bot-failure-report` `SchedulerLog` rows it
+writes (full report JSON in the existing `sourceBreakdown` column — no schema change).
+
+Two deliberate calls worth knowing about:
+- A rate with nothing resolved to divide by returns `null`, never `0`. "No data yet"
+  and "0% success" are different answers and collapsing them would make the report
+  actively misleading — a brand-new adapter would read as a broken one.
+- §03's ">50% per-adapter failure rate" alert is a `logger.warn`, guarded by a
+  20-resolved-task minimum, **not** a dashboard banner — §03 itself says not to build
+  alert UI before there's real volume to calibrate thresholds against.
+
+**Still deliberately not built**: §03's §3 CAPTCHA-hit rate, §6 confidence-score
+histogram, and §7 cap sanity check — out of scope for F9's stated remaining half
+(per-adapter success rate + failure-class breakdown), and each needs its own query
+rather than falling out of the two above for free. §3 is the most likely next
+addition, since it's the before/after metric for F7's live-view work.
 
 **Risks**: low — this is straightforward reporting work, mostly bounded by how much
 real `ApplyTask` data exists to report on.
 
 **Definition of done**: after a batch of F5/F6 test runs, someone can answer "what's
 our Greenhouse success rate this week" without hand-writing a Prisma query each time.
+**Met 2026-08-19** — `node -r dotenv/config jobs/applyBotFailureReport.js 7` against
+the real database answered exactly that question (`greenhouse 22.2% (2/9)`,
+`lever 0% (0/3)`, failure classes `TIMEOUT: 3, CAPTCHA: 3`) with no query written by
+hand.
 
 ---
 

@@ -12,6 +12,7 @@ const logger = require('../src/logger');
 const applyBotQueue = require('../src/queues/applyBotQueue');
 const { resolvePlatform, requiresCredential } = require('../src/services/applyBotPlatform');
 const { sweepStaleApplyTasks } = require('./applyBotSweep');
+const { runApplyBotFailureReport } = require('./applyBotFailureReport');
 
 const DEFAULT_DAILY_CAP = 25;
 const COMPANY_DEDUPE_DAYS = 90;
@@ -112,9 +113,25 @@ async function runApplyBotSelection() {
   // selectForUser() trustworthy the moment the switch is flipped back on.
   const swept = await sweepStaleApplyTasks();
 
+  // F9 — reported here, BEFORE selection and on BOTH sides of the kill switch, for
+  // the same reason the sweep above runs unconditionally: a team that just turned
+  // the bot off after a bad week is exactly the team that still needs to see why.
+  // Running before selection also keeps the numbers clean — the tasks this run is
+  // about to create are 'queued', i.e. in-flight, so they'd only pad the totals.
+  // Caught rather than thrown: reporting is observability, and a failed report must
+  // never make a successful selection run look failed. Not silently swallowed
+  // either — the error is logged, and the missing 'apply-bot-failure-report'
+  // SchedulerLog row is itself the durable signal that it didn't run.
+  let report = null;
+  try {
+    report = await runApplyBotFailureReport();
+  } catch (err) {
+    logger.error(`apply-bot-select: failure report did not run — ${err.message}`);
+  }
+
   if (!(await isEnabled())) {
-    logger.info('apply-bot-select: kill switch is off, skipping selection (sweep still ran).');
-    return { enabled: false, users: 0, created: 0, swept };
+    logger.info('apply-bot-select: kill switch is off, skipping selection (sweep and failure report still ran).');
+    return { enabled: false, users: 0, created: 0, swept, report };
   }
 
   const cap = parseInt(process.env.APPLY_BOT_DAILY_CAP || String(DEFAULT_DAILY_CAP), 10);
@@ -131,7 +148,7 @@ async function runApplyBotSelection() {
     data: { jobName: 'apply-bot-select', status: 'completed', jobCount: created },
   });
   logger.info(`apply-bot-select: created ${created} ApplyTask(s) across ${users.length} user(s), mode=${mode}`);
-  return { enabled: true, users: users.length, created, mode, swept };
+  return { enabled: true, users: users.length, created, mode, swept, report };
 }
 
 module.exports = { runApplyBotSelection, isEnabled, KILL_SWITCH_KEY };

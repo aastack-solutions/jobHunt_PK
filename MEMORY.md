@@ -41,10 +41,10 @@ touching what.
 | F6 | Ashby adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — 2 real bugs found & fixed (a genuine field-scan hydration-timing race, unlike F5's Greenhouse where none was needed; and a click-through-to-/application form flow); CAPTCHA not observed on any of the 5 (unlike F4/F5's 100%) |
 | F7 | CAPTCHA / bot-challenge live-view | ✅ Done, verified (2 items narrower-scope) | Claude (session) | Verified 2026-08-19 against a real hCaptcha — full pause→live-view→resume cycle confirmed live, critical TASK_DEADLINE_MS pause-aware regression confirmed with real evidence, 1 real bug fixed (WS auth accepted-then-closed instead of never-accepted). Mouse/keyboard round-trip and email-verification not exercised against real occurrences — see TEST_PLAN.md |
 | F8 | Generic engine (non-ATS sources) | 🔴 Not started, gated off | Unassigned | `APPLY_BOT_GENERIC_ENABLED=false` — don't enable until built |
-| F9 | Failure measurement & alerting | 🟡 Partially built | Unassigned | Staleness/needs-review dashboard alerting done 2026-08-17; per-adapter success-rate reporting still open |
-| F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 43 automated tests passing, 3 skipped (Playwright-only) as of 2026-08-19 — DB-dependent sweep/callback tests un-skipped and made real during F2 verification; remaining items need a real Playwright install |
+| F9 | Failure measurement & alerting | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon — all 4 test-plan items pass. Remaining half built (`jobs/applyBotFailureReport.js`); 1 real design bug found & fixed during verification (report skipped entirely when the kill switch was off). Item 2 verified at logic level only — frontend has no test tooling |
+| F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 47 automated tests passing, 3 skipped (Playwright-only) as of 2026-08-19 — DB-dependent sweep/callback tests un-skipped during F2 verification, +5 added by F9; remaining items need a real Playwright install |
 | F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
-| F12 | Live-mode rollout & safety ops | 🔴 Blocked on F5/F6/F9/F10 | Unassigned | Now also requires: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17) |
+| F12 | Live-mode rollout & safety ops | 🔴 Blocked on F10 only | Unassigned | F5/F6/F9 now all done — F10's Playwright-dependent items are the last build blocker. Still also requires: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17) |
 | F13 | Unified application tracking (source, resume link, ghosted) | ✅ Built, ⚠️ untested | — | Closes the pre-existing "Apply button doesn't track" gap too — see Decisions Log 2026-08-17 |
 | F14 | Email-based application status auto-detection | 🔵 Researched + specified, not built | Unassigned | User opted in to scoping this — needs a real Google Cloud OAuth app before any code can be tested |
 
@@ -53,6 +53,81 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F9's remaining half built and verified against real Neon; 1 real design bug found and fixed during verification
+Branch: `f9-failure-measurement` (branched from `master` after F7 merged in).
+
+**Why F9 and not F8, even though F8 is the next number.** F8 was the obvious next
+ticket by sequence, but `TECHNICAL_PLAN.md`'s own F8 section says
+*"Definition of done: not defined yet — this feature needs its own scoping pass"*,
+and `01-research-plan.md` §E requires a corpus of 15-20 real non-ATS apply forms
+built **before** any synonym tuning. Building it now would have meant inventing a
+definition of done, which `CLAUDE.md` explicitly forbids. F9 was chosen instead: its
+DoD is crisp, it's Wave 1 (zero file conflicts), and F12 is blocked on it. **F8 still
+needs its scoping pass — that's the real next decision, not a coding task.**
+
+**What was built.** `jobs/applyBotFailureReport.js` (the file the plan had already
+named and scaffolded — filled in, not restructured). Two `groupBy` queries produce
+§03's overall success rate, abstain rate, failure-class breakdown, and per-adapter
+success rate over a rolling window. Runs automatically after each `applyBotSelect.js`
+run, on demand as a CLI, and persists each run as an `apply-bot-failure-report`
+`SchedulerLog` row (full JSON in the existing `sourceBreakdown` column — no schema
+change, no migration).
+
+**The real bug, found by verifying rather than by reading.** The first version put
+the report call at the *end* of `runApplyBotSelection()`, after the kill-switch
+early-return. Triggering the endpoint with the switch off proved it: the report
+never ran. That's backwards — the sweep above it is deliberately unconditional
+because *"cleaning up stale tasks from BEFORE the feature was disabled is still
+correct"*, and the identical argument applies to reporting: a team that just turned
+the bot off after a bad week is exactly the team that needs the numbers explaining
+why. Moved above the kill-switch check; both paths now return a report.
+
+**A second thing verification caught, worth writing down.** Triggering
+`/api/internal/apply-bot/trigger-select` created 15 real `ApplyTask` rows — because
+Redis's `apply_bot:enabled` key was `"true"` from an earlier session and **overrides**
+`APPLY_BOT_ENABLED="false"` in `.env` (by design, see `applyBotSelect.js`). The env
+var is only a boot-time default. Anyone triggering selection during local testing
+should check the Redis key first, not the `.env` file. The 15 rows were deleted, the
+queue drained, and the key restored to `"true"` (its original value) afterwards.
+
+**Design calls made, both defensible either way — recorded so they aren't silently
+re-litigated:**
+- A rate with a zero denominator returns `null`, never `0`. A brand-new adapter with
+  no resolved tasks would otherwise read as a 0%-success (i.e. broken) adapter.
+- §03's ">50% per-adapter failure rate" alert is a `logger.warn` with a
+  20-resolved-task minimum, **not** a dashboard banner — §03 itself says not to build
+  alert UI before there's real volume to calibrate against.
+- The report is global (no `userId` filter): "what's *our* Greenhouse success rate"
+  is a team question. Note this differs from the dashboard's `applyBotNeedsReview`,
+  which is deliberately per-user. Both are correct for their own purpose.
+- §03's §3 CAPTCHA-hit rate, §6 confidence histogram and §7 cap check were left out
+  as out-of-scope for F9's stated remaining half. §3 is the likeliest next addition —
+  it's the before/after metric for F7's live-view work.
+
+**Verification (all 4 TEST_PLAN F9 items, against real Neon + a locally-running
+backend).** Items 1 and 3 end-to-end through `GET /api/dashboard`: a freshly
+registered user read `0` while the database globally held 3 `unknown_outcome` rows
+owned by someone else (proving the count is correctly per-user), then `0 → 2 → 1 → 0`
+as seeded rows were resolved one at a time. Item 4 is now automated —
+`backend/test/applyBotFailureReport.test.js`, 5 tests, isolated by seeding under a
+unique per-test `adapterUsed` name so the global report's numbers stay exactly
+assertable without adding a test-only filter to production code. Item 2 was verified
+at logic level only: the real `applyBotOverdue` expression was extracted from
+`SchedulerAlert.jsx` and evaluated (`null` → no banner, live 4h-old value → no
+banner, 26h-old → banner). **Honest limit**: that is not a rendered-component test —
+the frontend has no test tooling at all (no vitest/RTL), and the never-run `null`
+case couldn't be produced end-to-end without deleting this database's real
+`apply-bot-select` history.
+
+Also: the DoD was demonstrated literally — `node -r dotenv/config
+jobs/applyBotFailureReport.js 7` answered "what's our Greenhouse success rate this
+week" (`greenhouse 22.2% (2/9)`, `lever 0% (0/3)`, `TIMEOUT: 3, CAPTCHA: 3`) with no
+hand-written query. Full suite after the change: **47 passing, 3 skipped
+(Playwright-only), 0 failing.** The verification user and all rows it created were
+deleted; the database is back to its pre-session state (1 user, 10 `ApplyTask` rows).
+The `apply-bot-failure-report` `SchedulerLog` rows written during verification were
+left in place — they're accurate records of runs that really happened.
 
 ### 2026-08-19 — F7 built and verified against a real hCaptcha; critical pause-aware-deadline requirement confirmed with real evidence; 1 real security bug fixed
 Branch: `f7-captcha-live-view` (branched from `master` after merging F6 in).
@@ -815,6 +890,13 @@ first time someone actually fills in a TODO.
 
 ## Open Questions
 
+- **What F8's definition of done actually is.** `TECHNICAL_PLAN.md` leaves it
+  undefined on purpose, pending a scoping pass "once F4-F7 are done and real data
+  exists on how often non-ATS `applyUrl`s actually resolve to something fillable at
+  all." F4-F7 are now done, so this pass is due — and it is a research/scoping
+  decision, not a coding task: `01-research-plan.md` §E wants a corpus of 15-20 real
+  non-ATS apply forms collected *before* any synonym tuning. Flagged 2026-08-19 when
+  F9 was picked over F8 for exactly this reason. **Unresolved.**
 - Whether to add `phone`/`linkedinUrl`/`portfolioUrl` fields to `User` (schema
   change, needs explicit sign-off) vs. accepting that ATS forms requiring phone will
   always abstain. See `docs/apply-bot/01-research-plan.md` §D. **Unresolved.**

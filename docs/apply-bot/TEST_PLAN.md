@@ -353,22 +353,43 @@ selection dedupe) per the plan's own required design point.
 
 ## F9 — Failure Measurement & Alerting
 
-- [ ] 🖐️ Dashboard's `applyBotNeedsReview` count matches the actual number of
-      `unknown_outcome` rows in the database
-- [ ] 🖐️ `SchedulerAlert` shows the apply-bot staleness banner only after
+All four verified 2026-08-19 against the real Neon database with the backend
+running locally (branch `f9-failure-measurement`).
+
+- [x] 🖐️ Dashboard's `applyBotNeedsReview` count matches the actual number of
+      `unknown_outcome` rows in the database — verified live: a freshly-registered
+      user read `0` while the database globally held 3 `unknown_outcome` rows
+      belonging to another user (so this also proves the count is correctly
+      per-user, not global), then `2` after seeding exactly 2 rows for that user
+- [x] 🖐️ `SchedulerAlert` shows the apply-bot staleness banner only after
       `apply-bot-select` has run at least once and then gone stale >25h — confirm
-      NO false alarm for a user who's never enabled the feature
-- [ ] 🖐️ `SchedulerAlert` shows the "needs review" banner when the
-      `unknown_outcome` count is > 0, and it disappears once resolved
-- [ ] 🖐️ Per-adapter success-rate query (`docs/apply-bot/03`) returns correct
-      numbers against known seeded test data
+      NO false alarm for a user who's never enabled the feature — verified by
+      extracting the component's real `applyBotOverdue` expression out of
+      `SchedulerAlert.jsx` and evaluating it: `null` → no banner (the never-enabled
+      case), the live API's actual value (a run ~4h old) → no banner, a 26h-old
+      timestamp → banner. **Caveat**: this is logic-level, not a rendered-component
+      test — the frontend has no test tooling (no vitest/RTL in `package.json`), and
+      the `null` case could not be produced end-to-end without deleting this
+      database's real `apply-bot-select` SchedulerLog history, which wasn't worth it
+- [x] 🖐️ `SchedulerAlert` shows the "needs review" banner when the
+      `unknown_outcome` count is > 0, and it disappears once resolved — verified
+      live through `GET /api/dashboard` across the full cycle: 0 → 2 → 1 → 0 as the
+      seeded tasks were resolved one at a time. The banner itself is
+      `needsReview = applyBotNeedsReview > 0`, evaluated from source alongside item 2
+- [x] 🤖 Per-adapter success-rate query (`docs/apply-bot/03`) returns correct
+      numbers against known seeded test data — now automated, not manual:
+      `backend/test/applyBotFailureReport.test.js`, 5 tests, all passing against the
+      real database. Covers the resolved-only denominator (in-flight excluded), the
+      no-data-yet `null` vs. a real `0%`, the time window, the nullable
+      `failureClass` bucket, and the persisted `SchedulerLog` row
 
 ## F10 — Testing & Verification Harness
 
 - [x] 🤖 `npm test` exists and runs in under a minute — `node -r dotenv/config --test`
       (dotenv preload added 2026-08-19 so DB-dependent tests pick up `.env`
       automatically when present), both `backend/` and `backend/apply-bot/`,
-      43 tests passing / 3 skipped (Playwright-only) as of 2026-08-19
+      47 passing / 3 skipped (Playwright-only) as of 2026-08-19 after F9 added
+      `applyBotFailureReport.test.js` (was 43 passing / 3 skipped before F9)
 - [x] 🤖 `cryptoService` round trip (incl. tampered-ciphertext and wrong-iv/authTag
       cases) — `backend/test/cryptoService.test.js`
 - [x] 🤖 `applyBotPlatform.resolvePlatform`/`requiresCredential` against real

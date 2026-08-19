@@ -812,8 +812,10 @@ automatically afterward.
 
 ## F8 — Generic Engine (Non-ATS Sources)
 
-**Status**: not started, deliberately gated off (`APPLY_BOT_GENERIC_ENABLED=false`
-in `applyBotSelect.js`).
+**Status**: scoping pass ✅ done 2026-08-19 (the prerequisite this section demanded);
+build not started, still deliberately gated off (`APPLY_BOT_GENERIC_ENABLED=false`
+in `applyBotSelect.js`). **The evidence reframes this feature — read the DoD below
+before writing any code.**
 **Depends on**: nothing hard — soft-sequenced after F4/F5/F6 so `fieldTaxonomy.js`
 isn't being tuned by four people at once, and so there's real data on which fields
 those three adapters' fallback logic already handles well before duplicating effort.
@@ -837,11 +839,56 @@ The abstain rule (never guess on required fields) is the entire safety mechanism
 here; do not weaken `MIN_CONFIDENCE_TO_FILL` to make this feature's numbers look
 better (see `docs/apply-bot/04`'s explicit warning against this).
 
-**Definition of done**: not defined yet — this feature needs its own scoping pass
-once F4-F7 are done and real data exists on how often non-ATS `applyUrl`s actually
-resolve to something fillable at all (many are redirect/listing pages, not forms —
-this may turn out to be a much smaller feature than it sounds, or may need a
-resolve-the-real-destination-first step not yet designed).
+**Definition of done** — the scoping pass this section asked for ran 2026-08-19; full
+evidence is in `01-research-plan.md` §E ("DONE — findings"). It answered the question
+this section left open, and the answer changes what F8 is:
+
+> *"this may turn out to be a much smaller feature than it sounds, or may need a
+> resolve-the-real-destination-first step not yet designed"* — **both, as it turns
+> out.** Only **1 of 20** real non-ATS `applyUrl`s landed on a directly fillable form.
+> Meanwhile **611 of 1088** URLs currently classed `generic` (56%, measured across the
+> whole database) are Greenhouse boards on company domains that `resolvePlatform()`
+> misses because it only inspects `hostname` and ignores the `gh_jid` query parameter.
+
+So the generic field-matching engine — the thing this feature was named after — is
+the **lowest**-value part of the work, and the taxonomy's synonym list is not the
+bottleneck (§E Finding 5). F8 splits into three pieces of very unequal value:
+
+**F8a — platform re-resolution (highest value, lowest risk).** Teach
+`resolvePlatform()` (and `adapters/index.js`) that a `gh_jid=` parameter means
+Greenhouse regardless of hostname, and rewrite the applyUrl to the **embed** form
+(`job-boards.greenhouse.io/embed/job_app?for=<company>&token=<gh_jid>`) — *not* the
+canonical board URL, which redirects straight back to the company site (§E Finding 2).
+Routes 611 jobs to the already-verified F5 adapter, whose `#resume` selector is
+confirmed to match on those embed forms (§E Finding 3). **Needs explicit sign-off**:
+it moves 611 jobs onto a platform where `requiresCredential()` is true, so any user
+without a stored Greenhouse credential goes from "generic, attempted" to "skipped" —
+a real behaviour change, not a refactor.
+
+**F8b — the `resume_upload` scoring bug (small, self-contained, pure improvement).**
+On 4 of 4 real Greenhouse embed forms the file input is labelled "Attach" and carries
+`id="resume"`, but `scoreFieldForKey()` scores an id/name hit at `NAME_ATTR` (35),
+under `MIN_CONFIDENCE_TO_FILL` (60) — so the strictest gate in the whole engine (§04)
+fails on an unambiguous signal. Note `bestMatch()` already restricts `resume_upload`
+candidates to `type === "file"`, which makes an id/name hit *far* stronger evidence
+here than the same hit on a text field; the scoring doesn't reflect that. Fixing this
+is §04's blessed "case 2" (a real field under an unrecognised label — pure
+improvement, no accuracy tradeoff). Careful: these forms have **two** file inputs
+(`id="resume"` and `id="cover_letter"`), both labelled "Attach", so a naive
+`'attach'` synonym would match the cover-letter input too — which is exactly why the
+fix should key off the id/name, not the visible label.
+
+**F8c — the aggregator residual (largest remaining, lowest confidence).** The true
+unknown is 477 URLs across exactly 8 aggregator hosts (§E Finding 6), essentially all
+listing pages. This is where the "resolve-the-real-destination-first step not yet
+designed" actually belongs: follow the page's apply link, then re-resolve the
+destination (which may well be a 4th ATS — the one success was a JazzHR board at
+`applytojob.com`). Until that step exists, a generic *field-filling* engine has almost
+nothing to point at, so **F8c should not start with `fieldTaxonomy.js` tuning.**
+
+**Recommended order: F8b (safe, small), then F8a (needs sign-off), then F8c (needs
+its own design).** `APPLY_BOT_GENERIC_ENABLED` stays `false` throughout — none of the
+above requires turning the generic adapter on.
 
 ---
 

@@ -40,7 +40,7 @@ touching what.
 | F5 | Greenhouse adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings on the new job-boards.greenhouse.io domain — selectors correct as-is (no code bug found), CAPTCHA confirmed present on all 5 (1 only post-fill, confirming the dual pre/post check matters), hydration-timing question resolved (no wait needed) |
 | F6 | Ashby adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — 2 real bugs found & fixed (a genuine field-scan hydration-timing race, unlike F5's Greenhouse where none was needed; and a click-through-to-/application form flow); CAPTCHA not observed on any of the 5 (unlike F4/F5's 100%) |
 | F7 | CAPTCHA / bot-challenge live-view | ✅ Done, verified (2 items narrower-scope) | Claude (session) | Verified 2026-08-19 against a real hCaptcha — full pause→live-view→resume cycle confirmed live, critical TASK_DEADLINE_MS pause-aware regression confirmed with real evidence, 1 real bug fixed (WS auth accepted-then-closed instead of never-accepted). Mouse/keyboard round-trip and email-verification not exercised against real occurrences — see TEST_PLAN.md |
-| F8 | Generic engine (non-ATS sources) | 🔴 Not started, gated off | Unassigned | `APPLY_BOT_GENERIC_ENABLED=false` — don't enable until built |
+| F8 | Generic engine (non-ATS sources) | 🟡 Scoped (evidence-based DoD written); F8b done & verified | Claude (session) | Still `APPLY_BOT_GENERIC_ENABLED=false`. §E corpus built 2026-08-19 against 20 real URLs — only 1/20 was a fillable form, and 56% of "generic" is actually Greenhouse. Split into F8a (needs sign-off) / F8b (✅ done) / F8c (needs design) |
 | F9 | Failure measurement & alerting | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon — all 4 test-plan items pass. Remaining half built (`jobs/applyBotFailureReport.js`); 1 real design bug found & fixed during verification (report skipped entirely when the kill switch was off). Item 2 verified at logic level only — frontend has no test tooling |
 | F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 47 automated tests passing, 3 skipped (Playwright-only) as of 2026-08-19 — DB-dependent sweep/callback tests un-skipped during F2 verification, +5 added by F9; remaining items need a real Playwright install |
 | F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
@@ -53,6 +53,86 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F8 scoping pass done with a real 20-URL corpus; the evidence reframes the feature, and one real engine bug was found and fixed (F8b)
+Branch: `f8-generic-engine` (branched from `f9-failure-measurement`, since F9 is not
+merged to `master` yet and both touch `applyBotSelect.js` — branching off master
+would have set up a conflict for no benefit).
+
+**Why a scoping pass and not code.** `TECHNICAL_PLAN.md`'s F8 section said its
+definition of done was undefined pending exactly this research, and
+`01-research-plan.md` §E demanded a real corpus *before* touching `SYNONYMS`. So the
+corpus was built first: 20 real `applyUrl`s sampled to span all 16 hosts that
+`resolvePlatform()` calls `generic`, visited with real headless Chromium, scanned
+with the **real** `scanFields`/`bestMatch` (not a reimplementation). Read-only —
+nothing typed, uploaded or submitted anywhere.
+
+**The headline: only 1 of 20 (5%) landed on a directly fillable form.** 9 were
+listing/redirect pages, 6 were a known ATS behind a company domain, 4 were listing
+pages whose field count was inflated by search/newsletter boxes. Full findings are
+written into `01-research-plan.md` §E; the F8 section of `TECHNICAL_PLAN.md` has been
+rewritten with an evidence-based DoD that splits F8 into F8a/F8b/F8c.
+
+**The finding that reframes the feature: 56% of "generic" is Greenhouse.** Measured
+across the whole database, **611 of 1088** URLs that resolve to `generic` carry a
+`gh_jid=` parameter — Greenhouse's own job id. `resolvePlatform()` only inspects
+`hostname`, so Greenhouse boards served on samsara.com, coinbase.com, stripe.com,
+instacart.careers, databricks.com, careers.airbnb.com, jobs.dropbox.com and asana.com
+are invisible to it. That is 21.8% of all active jobs pointed at a generic engine that
+does not exist instead of at the already-verified F5 adapter.
+
+**A negative result worth as much as the positive one.** The obvious fix — rewrite to
+`job-boards.greenhouse.io/<company>/jobs/<gh_jid>` — was probed on 6 of them and **all
+6 redirected straight back** to the company's own careers page. Greenhouse bounces the
+canonical board URL for embedded-board customers. What works is the embed URL
+(`/embed/job_app?for=<company>&token=<gh_jid>`): probed on 4, all 4 served a real
+application form. Anyone implementing F8a must use the embed URL — the canonical one
+looks right and silently does nothing.
+
+**Real bug found and fixed (F8b).** On 4 of 4 live Greenhouse embed forms the resume
+file input is labelled **"Attach"** and carries `id="resume"`. `'attach resume'` is not
+a substring of `'attach'`, so no label matched; the id/name path scored it at
+`NAME_ATTR` (35), under `MIN_CONFIDENCE_TO_FILL` (60) — so the strictest gate in the
+engine (per §04) failed on a completely unambiguous signal, and every one of these
+forms would have abstained over one word. Fixed by adding
+`NAME_ATTR_TYPE_CONFIRMED` (75): when `bestMatch` has *already* restricted candidates
+by element type (`resume_upload` -> `type="file"`), an id/name hit is corroborated
+rather than speculative, and deserves to clear the bar. Deliberately **not** fixed by
+adding an `'attach'` label synonym — these forms carry two file inputs, `id="resume"`
+and `id="cover_letter"`, both labelled "Attach", so a label synonym would have picked
+the wrong one about as often as the right one. Also hardened the id/name path to
+word-boundary matching while in there, so the two-letter `'cv'` synonym cannot hit an
+unrelated id like `cvv_scan` — that path was previously dead code for fill decisions
+(35 always lost to the 60 threshold), so this is the first time it can actually
+decide anything and the looseness started to matter.
+
+**Not affected: the shipping Greenhouse adapter.** It reaches the resume input via a
+hardcoded `#resume` selector and never consults the taxonomy for that field, so this
+bug was confined to F8's generic path. Verified as a side effect that `#resume` does
+match on the embed forms (1 element) — which is what makes F8a viable at all. Its
+companion selector `input[type="file"][name*="resume" i]` matches **0** there, since
+those inputs have an empty `name`; worth knowing before anyone "tidies up" that pair.
+
+**Also contradicted: §04's assumption about which lever matters.** §04 says the first
+tuning lever is the synonym list. On the one genuinely fillable form in the corpus (a
+JazzHR board at `applytojob.com`, reached only by following workingnomads.com through
+a redirect) the existing synonyms matched every required field at confidence 80 with
+no gaps at all. The corpus says the real first lever is *reaching a form*, not naming
+its fields.
+
+**Verification.** 5 new browser-free regression tests in
+`backend/apply-bot/test/fieldTaxonomy.test.js` (kept in the existing file — no new
+file, so the locked manifest is untouched). Against live pages: the 4 Greenhouse embed
+forms flipped from "required field missing" to fully matched, and re-scanning the
+original 20-URL corpus produced an **identical** verdict tally, confirming no new
+false positives on the 9 listing pages. Suites: apply-bot 30/30 passing with 0 skipped
+(Playwright is installed now, so F10's two browser-dependent stubs finally run);
+backend 52 passing, 1 skipped (needs a running server), 0 failing.
+
+**Open, needs a call before more F8 code:** F8a changes routing for 611 real jobs
+onto a platform where `requiresCredential()` is true — a user without a stored
+Greenhouse credential goes from "generic, attempted" to "skipped". That is a
+behaviour change, not a refactor, so it is not something to just do.
 
 ### 2026-08-19 — F9's remaining half built and verified against real Neon; 1 real design bug found and fixed during verification
 Branch: `f9-failure-measurement` (branched from `master` after F7 merged in).

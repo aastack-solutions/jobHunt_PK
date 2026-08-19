@@ -341,6 +341,22 @@ selection dedupe) per the plan's own required design point.
 
 ## F8 — Generic Engine (Non-ATS Sources)
 
+**Scoping pass done 2026-08-19** (see `01-research-plan.md` §E findings and
+TECHNICAL_PLAN's rewritten F8 DoD). F8 now splits into F8a (platform re-resolution,
+needs sign-off), F8b (the `resume_upload` scoring bug) and F8c (aggregator
+resolve-the-destination step). **F8b is done and verified**; F8a and F8c are not
+started, so the unchecked items below still stand.
+
+- [x] 🤖 **F8b** — `bestMatch` finds `resume_upload` on a real Greenhouse embed form
+      whose file input is labelled only "Attach", picks the `id="resume"` input over
+      the `id="cover_letter"` one, refuses a text field with the same id, and honours
+      a word boundary so `cv` cannot hit `cvv_scan` — 5 browser-free tests in
+      `backend/apply-bot/test/fieldTaxonomy.test.js`
+- [x] 🖐️ **F8b, against live forms** — the same 4 real Greenhouse embed forms that
+      previously scanned as `FORM_BUT_UNMAPPED` (required field missing) all scan as
+      `FILLABLE_FORM` after the fix, and re-scanning the original 20-URL corpus
+      produced an identical verdict tally, i.e. no new false positives on the 9
+      listing/redirect pages
 - [ ] 🤖 **Gate regression**: with `APPLY_BOT_GENERIC_ENABLED=false`, confirm
       generic-platform jobs never get an `ApplyTask` created during selection
 - [ ] 🖐️ Once enabled, a real non-ATS job's `applyUrl` gets scanned and its

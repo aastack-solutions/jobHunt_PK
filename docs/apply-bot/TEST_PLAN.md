@@ -357,15 +357,38 @@ started, so the unchecked items below still stand.
       `FILLABLE_FORM` after the fix, and re-scanning the original 20-URL corpus
       produced an identical verdict tally, i.e. no new false positives on the 9
       listing/redirect pages
-- [ ] 🤖 **Gate regression**: with `APPLY_BOT_GENERIC_ENABLED=false`, confirm
-      generic-platform jobs never get an `ApplyTask` created during selection
-- [ ] 🖐️ Once enabled, a real non-ATS job's `applyUrl` gets scanned and its
-      required fields matched with a reasonable confidence score
-- [ ] 🖐️ A deliberately unusual/unmappable test form produces
-      `skipped_low_confidence`, not a wrong guess
-- [ ] 🤖 **SSRF regression, specifically for this feature**: confirm a generic-engine
+- [x] 🖐️ **Gate regression**: with `APPLY_BOT_GENERIC_ENABLED=false`, confirm
+      generic-platform jobs never get an `ApplyTask` created during selection —
+      verified live against real Neon: a full selection run created **70 tasks, all
+      `greenhouse`, zero `generic`**, while 477 generic-platform jobs sat eligible in
+      the table
+- [x] 🖐️ Once enabled, a real non-ATS job's `applyUrl` gets scanned and its
+      required fields matched with a reasonable confidence score — covered by the
+      fixture-DOM test below plus the live §E corpus, where the one genuinely
+      fillable non-ATS form (a JazzHR board) matched every required field. Note the
+      flag stays **false**: §E found only 1 in 20 non-ATS `applyUrl`s is a form at
+      all, so enabling it today would mostly produce abstains against listing pages
+- [x] 🤖 A deliberately unusual/unmappable test form produces
+      `skipped_low_confidence`, not a wrong guess — `genericAdapter` returns
+      confidence 30 (under `worker.js`'s threshold of 60) and, critically, **writes
+      nothing** into the unrelated text boxes. Also asserted from the other
+      direction: finding only the resume upload is not enough to carry a form over
+      the line. See `backend/apply-bot/test/adapters.test.js`
+- [x] 🤖 **SSRF regression, specifically for this feature**: confirm a generic-engine
       task attempting to navigate to a private/internal address is blocked by the
-      SSRF guard — this is the scenario the guard was built ahead of time for
+      SSRF guard — this is the scenario the guard was built ahead of time for.
+      `isSafeUrl` refuses the cloud metadata endpoint, loopback (including the
+      backend's own internal API port), RFC1918 and non-http schemes, while still
+      allowing a real public posting through
+- [x] 🤖 **F8a** — a `gh_jid` parameter resolves to `greenhouse` on 8 real
+      employer domains, a non-numeric `gh_jid` is refused, the rewrite produces the
+      slug-free embed URL, and URLs that already work are left untouched
+- [x] 🖐️ **F8a, end to end through the real pipeline** — a live selection run
+      stored **17 of 70** tasks with `ApplyTask.applyUrl` rewritten to
+      `boards.greenhouse.io/embed/job_app?token=...` while `Application.applyUrl`
+      still points at the employer's own posting. Separately, 7 freshly-sampled
+      employer-hosted postings across 7 different employers (none previously probed)
+      all served a real application form at the rewritten URL
 
 ## F9 — Failure Measurement & Alerting
 

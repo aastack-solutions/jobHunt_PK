@@ -10,7 +10,7 @@ const prisma = require('../src/db');
 const redisClient = require('../src/redis');
 const logger = require('../src/logger');
 const applyBotQueue = require('../src/queues/applyBotQueue');
-const { resolvePlatform, requiresCredential } = require('../src/services/applyBotPlatform');
+const { resolvePlatform, requiresCredential, resolveNavigationUrl } = require('../src/services/applyBotPlatform');
 const { sweepStaleApplyTasks } = require('./applyBotSweep');
 const { runApplyBotFailureReport } = require('./applyBotFailureReport');
 
@@ -94,7 +94,12 @@ async function selectForUser(user, cap, mode) {
       data: {
         userId: user.id,
         jobId: job.id,
-        applyUrl: job.applyUrl,
+        // The URL the BOT navigates to, which for an employer-hosted Greenhouse
+        // board is the embed form rather than the job-description page a human
+        // would open (F8a -- see applyBotPlatform.resolveNavigationUrl). The
+        // human-facing link is preserved separately: routes/internal.js writes
+        // Application.applyUrl from job.applyUrl, not from this field.
+        applyUrl: resolveNavigationUrl(job.applyUrl),
         adapterUsed: platform,
         mode,
         status: 'queued',

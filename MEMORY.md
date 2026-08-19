@@ -40,7 +40,7 @@ touching what.
 | F5 | Greenhouse adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings on the new job-boards.greenhouse.io domain — selectors correct as-is (no code bug found), CAPTCHA confirmed present on all 5 (1 only post-fill, confirming the dual pre/post check matters), hydration-timing question resolved (no wait needed) |
 | F6 | Ashby adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — 2 real bugs found & fixed (a genuine field-scan hydration-timing race, unlike F5's Greenhouse where none was needed; and a click-through-to-/application form flow); CAPTCHA not observed on any of the 5 (unlike F4/F5's 100%) |
 | F7 | CAPTCHA / bot-challenge live-view | ✅ Done, verified (2 items narrower-scope) | Claude (session) | Verified 2026-08-19 against a real hCaptcha — full pause→live-view→resume cycle confirmed live, critical TASK_DEADLINE_MS pause-aware regression confirmed with real evidence, 1 real bug fixed (WS auth accepted-then-closed instead of never-accepted). Mouse/keyboard round-trip and email-verification not exercised against real occurrences — see TEST_PLAN.md |
-| F8 | Generic engine (non-ATS sources) | 🟡 Scoped (evidence-based DoD written); F8b done & verified | Claude (session) | Still `APPLY_BOT_GENERIC_ENABLED=false`. §E corpus built 2026-08-19 against 20 real URLs — only 1/20 was a fillable form, and 56% of "generic" is actually Greenhouse. Split into F8a (needs sign-off) / F8b (✅ done) / F8c (needs design) |
+| F8 | Generic engine (non-ATS sources) | ✅ Done, verified | Claude (session) | F8a + F8b built and verified against real postings; `genericAdapter.js` implemented. F8c researched and deliberately closed — 3/16 aggregator postings reachable, and 2 of those 3 land on adapters we already have. `APPLY_BOT_GENERIC_ENABLED` stays false as a *conclusion*, not a gap |
 | F9 | Failure measurement & alerting | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon — all 4 test-plan items pass. Remaining half built (`jobs/applyBotFailureReport.js`); 1 real design bug found & fixed during verification (report skipped entirely when the kill switch was off). Item 2 verified at logic level only — frontend has no test tooling |
 | F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 47 automated tests passing, 3 skipped (Playwright-only) as of 2026-08-19 — DB-dependent sweep/callback tests un-skipped during F2 verification, +5 added by F9; remaining items need a real Playwright install |
 | F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
@@ -53,6 +53,78 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-19 — F8 completed: 611 misrouted jobs recovered, generic adapter implemented, F8c researched and closed
+Branch: `f8-generic-engine`. Follows the same day's scoping-pass entry below, which
+is where the evidence behind all of this lives.
+
+**F8a shipped, with the behaviour change signed off first.** `resolvePlatform()` now
+treats a `gh_jid=` query parameter as Greenhouse regardless of hostname, and
+`resolveNavigationUrl()` rewrites those postings to the embed form. Live measurement
+after the change: jobs resolving to `greenhouse` went **486 -> 1097**, `generic` fell
+**1088 -> 477** — the 611 predicted by the research, exactly.
+
+The signed-off consequence, restated because it is the part that affects users: those
+611 jobs now sit on a platform where `requiresCredential()` is true, so a user with no
+stored Greenhouse credential sees them as *skipped* rather than *attempted*. That is
+recorded as an assertion in `applyBotPlatform.test.js`, not just as a comment.
+
+**Two details in that implementation that are easy to get wrong later:**
+- It rewrites to the **legacy** `boards.greenhouse.io` host, which accepts `token`
+  alone and lets Greenhouse fill in the employer's board slug itself on redirect.
+  The modern `job-boards.greenhouse.io` host requires `for=<slug>` and served no form
+  without it on all 7 postings probed. Do not "modernise" that constant.
+- `gh_jid` is accepted only if it is **digits**. It arrives from third-party job
+  feeds and is interpolated into a URL the bot then navigates to.
+
+**Application.applyUrl now diverges from ApplyTask.applyUrl, deliberately.**
+`routes/internal.js` writes the *employer's* posting URL to the Application, while the
+task keeps the embed URL it actually navigated. Handing someone a bare embed form as
+the record of where they applied would be a downgrade.
+
+**genericAdapter.js implemented** (its TODOs filled in, file shape untouched). Follows
+`ashbyAdapter`'s scan -> `bestMatch` -> `nth(index)` pattern rather than inventing a
+second one. Notable choices: it tries a single `full_name` field first and only falls
+back to the `first_name`/`last_name` pair (filling both shapes would put a full name
+into a "First name" box); a split name only counts if the *first* name landed; it
+reports confidence **70** when everything required is present — above `worker.js`'s
+threshold of 60, below the 80 the selector-verified ATS adapters claim, because it
+inferred every field from labels it has never seen. `locateSubmit`'s patterns are
+**anchored**: an unanchored `/submit|apply/` matches "Apply to other jobs", and on a
+form of unknown structure a wrong click is worse than finding no button at all.
+
+**F8c researched and closed without building.** 16 real aggregator postings, 2 per
+host across all 8 hosts. Only 3 of 16 (19%) reached a fillable form by following the
+apply link — and 2 of those 3 landed on Greenhouse and Ashby, platforms we already
+have verified adapters for. The blockers on the rest are structural, not heuristic:
+weworkremotely.com puts the apply behind *"Create an account to view full job"*;
+remoteok.com's "Apply" is a `/l/<id>` gateway that bounced back to the same page;
+himalayas.app, mustakbil.com and remotive.com expose **zero** apply anchors at all.
+Recorded honestly: the probe's own link-picking misfired on arbeitnow.com, following
+a blog post called "Applying for German Citizenship", so the real ceiling is somewhat
+above 19% — just nowhere near enough to justify the build. If it is ever revived, the
+order the evidence supports is a JazzHR adapter first, then a link-follower whose only
+job is re-resolving into an existing adapter, and generic filling last.
+
+**Verification.** Live against real Neon with the backend running: a full selection
+run created **70 tasks, all greenhouse, zero generic** (the gate regression, with 477
+generic-platform jobs sitting eligible), and **17 of those 70** stored a rewritten
+embed URL while their Application link still pointed at the employer's posting. Seven
+freshly-sampled employer-hosted postings across seven different employers — none
+previously probed — all served a real application form at the rewritten URL. All four
+of TEST_PLAN's original F8 items are now checked, plus two added for F8a. Suite: **64
+passing, 1 skipped (needs a running server), 0 failing** — up from 43 total at the
+start of the day.
+
+One test failure during this work was **my own test's bug**, not the code's:
+`isSafeUrl` returns a plain boolean and the first draft asserted on a `{safe}`
+object. Worth noting only because the SSRF assertion would have silently passed
+against `undefined` had it been written the other way round.
+
+**Cleanup**: every task created during verification (15 + 70) was deleted and the
+queue drained; the database is back to its pre-session state (10 `ApplyTask` rows,
+1 user). The raised `APPLY_BOT_DAILY_CAP=80` was passed per-process for one run only
+and never written to `.env`.
 
 ### 2026-08-19 — F8 scoping pass done with a real 20-URL corpus; the evidence reframes the feature, and one real engine bug was found and fixed (F8b)
 Branch: `f8-generic-engine` (branched from `f9-failure-measurement`, since F9 is not

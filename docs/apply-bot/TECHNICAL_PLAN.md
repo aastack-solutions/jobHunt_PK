@@ -96,7 +96,7 @@ backend/
     │   │   ├── greenhouseAdapter.js      ✅[F5]
     │   │   ├── leverAdapter.js           ✅[F4]
     │   │   ├── ashbyAdapter.js           ✅[F6]
-    │   │   └── genericAdapter.js         🏗️[F8]
+    │   │   └── genericAdapter.js         ✅[F8] implemented 2026-08-19, still gated off
     │   ├── engine/
     │   │   ├── fieldTaxonomy.js          ✅[F5/F6/F8] generic field matching
     │   │   ├── captchaDetector.js        (existing — + looksLikeLoginPage; 🏗️[F7]: detectEmailVerification stub added)
@@ -812,10 +812,12 @@ automatically afterward.
 
 ## F8 — Generic Engine (Non-ATS Sources)
 
-**Status**: scoping pass ✅ done 2026-08-19 (the prerequisite this section demanded);
-build not started, still deliberately gated off (`APPLY_BOT_GENERIC_ENABLED=false`
-in `applyBotSelect.js`). **The evidence reframes this feature — read the DoD below
-before writing any code.**
+**Status**: ✅ done and verified 2026-08-19. F8a (platform re-resolution) and F8b
+(the `resume_upload` scoring bug) are built and verified against real postings;
+`genericAdapter.js` is now implemented rather than scaffolded. F8c is **researched
+and deliberately closed without building** — see its subsection below for the
+numbers. `APPLY_BOT_GENERIC_ENABLED` stays `false`, which is a conclusion of the
+research rather than an unfinished step.
 **Depends on**: nothing hard — soft-sequenced after F4/F5/F6 so `fieldTaxonomy.js`
 isn't being tuned by four people at once, and so there's real data on which fields
 those three adapters' fallback logic already handles well before duplicating effort.
@@ -886,9 +888,36 @@ destination (which may well be a 4th ATS — the one success was a JazzHR board 
 `applytojob.com`). Until that step exists, a generic *field-filling* engine has almost
 nothing to point at, so **F8c should not start with `fieldTaxonomy.js` tuning.**
 
-**Recommended order: F8b (safe, small), then F8a (needs sign-off), then F8c (needs
-its own design).** `APPLY_BOT_GENERIC_ENABLED` stays `false` throughout — none of the
-above requires turning the generic adapter on.
+**Outcome, 2026-08-19.** F8b and F8a are done and verified; F8a was explicitly
+signed off before shipping. `genericAdapter.js`'s TODOs are filled in too, so the
+generic engine is correct and safe *when* enabled. `APPLY_BOT_GENERIC_ENABLED` stays
+`false` — not as an unfinished step but as the research's conclusion.
+
+**F8c: researched, deliberately not built.** The follow-the-apply-link idea was
+probed on 16 real aggregator postings, 2 per host across all 8 hosts. Only **3 of 16
+(19%)** reached a fillable form, and **2 of those 3 landed on Greenhouse and Ashby**
+— platforms with verified adapters already, i.e. the payoff here is again *routing*,
+not generic filling. The third landed on JazzHR (`applytojob.com`), where the
+existing synonyms already match every required field; if F8c is ever revived, a small
+JazzHR adapter is a better first move than a link-follower.
+
+The failures are structural, not fixable by better heuristics:
+- **weworkremotely.com** — "Apply now" leads to *"Create an account to view full
+  job"*. A login wall the bot has no account for.
+- **remoteok.com** — "Apply" points at a `/l/<id>` tracking gateway that bounced
+  straight back to the same page.
+- **himalayas.app, mustakbil.com, remotive.com** — **zero** apply anchors on the
+  page at all (4 postings, 2 each): the control is scripted or gated, not an `<a>`.
+
+One honest caveat on that 19%: the probe's link-picking heuristic is weak, and it
+demonstrably misfired on `arbeitnow.com`, where it followed a blog post titled
+*"Applying for German Citizenship"* instead of the real apply control. So the true
+ceiling is somewhat above 19% — but the login walls and missing anchors above cap it
+well short of anything that would justify the build now.
+
+**If F8c is revived**, the sequence the evidence supports is: (1) a JazzHR adapter,
+(2) a link-follower whose *only* job is to re-resolve into an existing adapter, and
+(3) generic filling last, if ever.
 
 ---
 

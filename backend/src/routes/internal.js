@@ -228,7 +228,11 @@ router.post('/apply-bot/tasks/:id/callback', requireApplyBotSecret, async (req, 
         company: task.job.company,
         locationType: task.job.locationType,
         status: 'applied',
-        applyUrl: task.applyUrl,
+        // The posting a human would open, NOT task.applyUrl -- since F8a those can
+        // differ: for an employer-hosted Greenhouse board the task navigates to the
+        // bare embed form, which is a poor link to show someone reviewing where they
+        // applied. Falls back to the task's URL when the job row is somehow absent.
+        applyUrl: task.job.applyUrl || task.applyUrl,
         source: 'auto_apply_bot',
         resumeId: resume?.id || null,
       },

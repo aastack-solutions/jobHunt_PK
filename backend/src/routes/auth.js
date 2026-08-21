@@ -14,6 +14,31 @@ const BCRYPT_COST = 12;
 const LOCK_THRESHOLD = 10;
 const LOCK_TTL_SECONDS = 1800;
 
+// Precomputed once at module load — found 2026-08-21 (security review). Without
+// this, a login against a non-existent email skipped bcrypt.compare entirely and
+// returned near-instantly, while a wrong-password attempt against a real email
+// paid the full ~50-100ms compare cost. Both responses are the identical 401
+// "Invalid credentials" body, but the timing difference lets an attacker
+// distinguish "unknown email" from "known email, wrong password" anyway —
+// undermining this file's own stated intent ("Never reveal whether the email
+// exists"). Comparing against this fixed decoy hash when no user is found means
+// every login attempt pays the same bcrypt cost regardless of outcome.
+const DUMMY_HASH_FOR_TIMING = bcrypt.hashSync('no-such-user-timing-decoy', BCRYPT_COST);
+
+// Promisified req.session.regenerate() — found 2026-08-21 (security review).
+// Neither /register nor /login called this before assigning req.session.userId,
+// so the session id issued before authentication (e.g. to an anonymous visitor)
+// was reused after login rather than replaced — a session-fixation shape. Real
+// exploitability here is low (cookies are httpOnly/secure(prod)/sameSite:strict,
+// which closes off the common ways an attacker plants a known session id on a
+// victim on this same-origin app), but issuing a fresh session id on privilege
+// change is standard practice and cheap to do correctly.
+function regenerateSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((err) => (err ? reject(err) : resolve()));
+  });
+}
+
 const registerSchema = z.object({
   email: z.string().email('Valid email required'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
@@ -53,6 +78,7 @@ router.post('/register', authLimiter, async (req, res) => {
     data: { email: normalizedEmail, passwordHash, fullName },
   });
 
+  await regenerateSession(req);
   req.session.userId = user.id;
   return res.status(201).json(publicUser(user));
 });
@@ -74,9 +100,9 @@ router.post('/login', authLimiter, async (req, res) => {
   }
 
   const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
-  const valid = user ? await bcrypt.compare(password, user.passwordHash) : false;
+  const valid = await bcrypt.compare(password, user ? user.passwordHash : DUMMY_HASH_FOR_TIMING);
 
-  if (!valid) {
+  if (!user || !valid) {
     const count = await redisClient.incr(key);
     if (count === 1) await redisClient.expire(key, LOCK_TTL_SECONDS);
     // Never reveal whether the email exists.
@@ -84,6 +110,7 @@ router.post('/login', authLimiter, async (req, res) => {
   }
 
   await redisClient.del(key);
+  await regenerateSession(req);
   req.session.userId = user.id;
   return res.json(publicUser(user));
 });

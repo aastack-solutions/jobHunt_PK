@@ -272,6 +272,30 @@ never reaching a real, fillable form one click away. Fixed by the same
 `ensureApplicationFormVisible()` function (falls back to finding and clicking the
 control if the name field isn't found within a few seconds).
 
+**2026-08-20 follow-up (code review fix)**: found and fixed a third real bug,
+distinct from the two above — `fillApplication()`'s `fillByIndex()` located each
+field via `page.locator('input, textarea, select').nth(match.field.index)`,
+where `index` came from a one-time `scanFields()` snapshot taken before any
+filling happened. If filling one field mutates the DOM before a later field is
+filled (a validation-triggered re-render inserting/removing a sibling element —
+the adapter's own top comment already flags Ashby as "more dynamically rendered
+than Greenhouse/Lever's", and F5 separately confirmed Greenhouse's `#resume`
+input unmounts after a file is accepted, so DOM mutation mid-fill is an
+established pattern for this class of ATS, not a hypothetical), the later
+field's positional index silently points at the wrong live element. **Proved
+this is real, not theoretical**, with a standalone script before writing a
+permanent test: a fixture page where typing into the name field inserts a
+sibling element ahead of the email field — `nth(match.field.index)` for email
+resolved to the newly-inserted element instead, filling the wrong element with
+the email value while the real email input stayed blank. Fixed by preferring a
+stable `id`/`name` attribute selector (`locatorForField()`) over the positional
+index, falling back to the index only when a field has neither. Added
+`test/ashbyAdapter.test.js`, confirmed it fails on the old code (empty email
+field) and passes on the fix, run for real against actual Chromium. Also
+carried F4/F5's `worker.js` CAPTCHA mode-check fix onto this branch for
+consistency (Ashby didn't show CAPTCHA in the 5 postings tested, but the gate
+still matters generically for any future gated/CAPTCHA'd posting).
+
 ## F7 — CAPTCHA / Bot-Challenge Live-View
 
 - [ ] 🖐️ A real CAPTCHA hit sets `ApplyTask.status` to the pause state with

@@ -131,21 +131,42 @@ async function runTask(applyTaskId, ctx) {
       return;
     }
 
+    // CAPTCHA gate — LIVE mode only short-circuits here. Per the plan's own F5
+    // "Definition of done" (docs/apply-bot/TECHNICAL_PLAN.md): shadow mode's whole
+    // job is "a real form filled correctly... in shadow mode... WITH CAPTCHA
+    // correctly detected and classified (not silently mis-filled) when present" —
+    // i.e. shadow mode is explicitly expected to fill the form AND report the
+    // CAPTCHA, not one instead of the other. A CAPTCHA never blocks Playwright from
+    // filling form fields (it only blocks actual submission), so gating shadow mode
+    // on it unconditionally here would have made shadow mode permanently unable to
+    // produce a real shadow_complete result for any CAPTCHA-protected ATS — which,
+    // per F4/F5's own verification, is the common case (Lever, Greenhouse), not the
+    // exception. This is the same class of bug as internal.js's F2 fix: a
+    // side-effecting branch that needed a task.mode check and didn't have one.
     const preFillCaptcha = await adapter.detectCaptcha(session.page);
     if (preFillCaptcha.detected) {
       await captureStep('captcha-detected');
-      // Phase 1 has no live-view/pause UI yet — a detected CAPTCHA just fails the
-      // task with the reason logged, rather than pausing (see plan §9, Phase 1 scope).
-      await backendApi.reportResult(applyTaskId, {
-        status: 'failed', failureClass: 'CAPTCHA',
-        failureReason: `CAPTCHA detected before form fill (${preFillCaptcha.strategy}).`,
-        screenshotKeys,
-      });
-      return;
+      if (task.mode === 'live') {
+        // Phase 1 has no live-view/pause UI yet — a detected CAPTCHA just fails the
+        // task with the reason logged, rather than pausing (see plan §9, Phase 1 scope).
+        await backendApi.reportResult(applyTaskId, {
+          status: 'failed', failureClass: 'CAPTCHA',
+          failureReason: `CAPTCHA detected before form fill (${preFillCaptcha.strategy}).`,
+          screenshotKeys,
+        });
+        return;
+      }
     }
 
     const { fieldsFilled, confidence } = await adapter.fillApplication(session.page, profile);
     await captureStep('after-fill');
+    // Carried in fieldsFilled (already a free-form Json column/field, no schema
+    // change needed) rather than as a new top-level result key — internal.js's
+    // callback schema is .strict(), so an unrecognized top-level field would be
+    // rejected outright rather than silently dropped.
+    if (preFillCaptcha.detected) {
+      fieldsFilled._captchaDetectedPreFill = { strategy: preFillCaptcha.strategy };
+    }
 
     if (confidence < LOW_CONFIDENCE_THRESHOLD) {
       await backendApi.reportResult(applyTaskId, {
@@ -157,7 +178,7 @@ async function runTask(applyTaskId, ctx) {
     }
 
     const postFillCaptcha = await adapter.detectCaptcha(session.page);
-    if (postFillCaptcha.detected) {
+    if (postFillCaptcha.detected && task.mode === 'live') {
       await captureStep('captcha-after-fill');
       await backendApi.reportResult(applyTaskId, {
         status: 'failed', failureClass: 'CAPTCHA',
@@ -166,9 +187,15 @@ async function runTask(applyTaskId, ctx) {
       });
       return;
     }
+    if (postFillCaptcha.detected) {
+      await captureStep('captcha-after-fill');
+      fieldsFilled._captchaDetectedPostFill = { strategy: postFillCaptcha.strategy };
+    }
 
     if (task.mode !== 'live') {
-      // Shadow mode: fill everything, stop one click before Submit.
+      // Shadow mode: fill everything, stop one click before Submit. A CAPTCHA
+      // detected along the way is recorded in fieldsFilled above, not treated as a
+      // failure — see the comment on preFillCaptcha above for why.
       const result = {
         status: 'shadow_complete', fieldsFilled, confidenceScore: confidence, screenshotKeys,
       };

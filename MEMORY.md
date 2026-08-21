@@ -38,7 +38,7 @@ touching what.
 | F3 | apply-bot service scaffold & worker runtime | ✅ Done, verified (2 items env-blocked) | Claude (session) | Verified 2026-08-19 locally (no Docker) — full worker pipeline, TIMEOUT deadline, maxStalledCount:0 all confirmed live; docker build (no Docker) and real SIGTERM delivery (Windows limitation) need the actual Railway deploy |
 | F4 | Lever adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — name/email/resume selectors confirmed correct, CAPTCHA (hCaptcha) confirmed present on all 5 (resolves prior open question), 2 real bugs found & fixed (locateSubmit selector, isAlreadySolved textarea-vs-input check) |
 | F5 | Greenhouse adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings on the new job-boards.greenhouse.io domain — selectors correct as-is (no code bug found), CAPTCHA confirmed present on all 5 (1 only post-fill, confirming the dual pre/post check matters), hydration-timing question resolved (no wait needed) |
-| F6 | Ashby adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — 2 real bugs found & fixed (a genuine field-scan hydration-timing race, unlike F5's Greenhouse where none was needed; and a click-through-to-/application form flow); CAPTCHA not observed on any of the 5 (unlike F4/F5's 100%) |
+| F6 | Ashby adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 (2 bugs: hydration race, click-through flow); code-review fix 2026-08-20 — fillByIndex used a positional DOM index that a mid-fill re-render could silently invalidate (proved with a fixture test), fixed to prefer id/name lookup; also carried F4/F5's worker.js CAPTCHA mode-check fix onto this branch |
 | F7 | CAPTCHA / bot-challenge live-view | 🔴 Not started | Unassigned | Scope grew: must also cover email-verification challenges AND make TASK_DEADLINE_MS pause-aware (see Decisions Log 2026-08-17) |
 | F8 | Generic engine (non-ATS sources) | 🔴 Not started, gated off | Unassigned | `APPLY_BOT_GENERIC_ENABLED=false` — don't enable until built |
 | F9 | Failure measurement & alerting | 🟡 Partially built | Unassigned | Staleness/needs-review dashboard alerting done 2026-08-17; per-adapter success-rate reporting still open |
@@ -53,6 +53,55 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-20 — F6 code-review fix: fillByIndex's positional DOM lookup could silently target the wrong field after a mid-fill re-render; also carried F4/F5's worker.js fix onto this branch
+Branch: `f6-ashby-adapter`. Same "fix every bug, verify against the test plan"
+pass as F1-F5 (see those entries below).
+
+**Real bug found**: `ashbyAdapter.js`'s `fillApplication()` located each field
+via `page.locator('input, textarea, select').nth(match.field.index)`, where
+`index` came from a ONE-TIME `scanFields()` snapshot taken before any filling
+started. `nth(index)` re-queries the LIVE DOM at call time, not the original
+snapshot — so if filling one field mutates the DOM before a later field is
+filled (inserting/removing/reordering a sibling element), the later field's
+index can silently point at a different element than the one `scanFields()`
+actually matched. This isn't a hypothetical: the adapter's own top comment
+already flags Ashby as "more dynamically rendered than Greenhouse/Lever's",
+and F5 (below) separately confirmed Greenhouse's own `#resume` input unmounts
+after a file is accepted — DOM mutation mid-fill is an established pattern for
+this class of ATS.
+
+**Proved it before fixing it**: wrote a standalone script with a fixture page
+where an `input` event on the name field inserts a new sibling element
+immediately before the email field (simulating a real validation-triggered
+re-render). Confirmed directly: after that mutation, `nth(1)` — the email
+field's index at scan time — resolved to the newly-inserted element's id
+(`dynamic_injected`), not `_systemfield_email`. Filling by that stale index
+would have silently written the email into the wrong element while leaving
+the real email field blank.
+
+**Fix**: added `locatorForField()`, which prefers a stable `[id="..."]` or
+`[name="..."]` attribute selector (survives DOM reordering/insertion) over the
+positional index, falling back to the index only when a field has neither.
+Added `test/ashbyAdapter.test.js` reproducing the exact mutation scenario as a
+permanent regression test — confirmed it fails on the old code (empty email
+field, value went into the injected element instead) and passes on the fix;
+both runs were against real Chromium, not mocked.
+
+**Also carried F4/F5's `worker.js` CAPTCHA-gate fix onto this branch**: same
+reasoning as F5's entry below — this branch predates that fix, so it had the
+same bug (CAPTCHA detection failed the task unconditionally regardless of
+`task.mode`). Ashby didn't show CAPTCHA in the 5 postings tested in the
+2026-08-19 session, but the fix still matters generically for any board that
+does gate on one, and keeps all three adapter branches consistent on the
+shared file ahead of eventual merge.
+
+**Why**: worth explicitly checking for this exact bug SHAPE (index-based
+element lookup that a script re-scanned at match time but re-resolves at fill
+time) in the generic engine when F8 is picked up — that adapter leans even
+harder on `fieldTaxonomy.js`'s generic scan-then-fill pattern than this one
+does, on arbitrary unknown page structures where DOM-mutation-on-fill is even
+less predictable.
 
 ### 2026-08-19 — F6 verified against 5 real live Ashby postings; 2 real bugs found (a genuine hydration race this time, plus a click-through flow), CAPTCHA question resolved
 Branch: `f6-ashby-adapter` (branched from `master` after merging F5 in; `git log

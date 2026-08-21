@@ -65,6 +65,26 @@ async function ensureApplicationFormVisible(page) {
   await page.waitForSelector(NAME_FIELD_SELECTOR, { timeout: 10000 }).catch(() => {});
 }
 
+// Prefers a stable attribute selector (id, then name) over the positional index
+// scanFields() assigned. Found and fixed 2026-08-20: filling one field can mutate
+// the DOM before the next fillByIndex() call runs — e.g. a validation-triggered
+// re-render inserting/removing sibling elements — which silently shifts what
+// `nth(index)` resolves to in the LIVE DOM versus what it pointed at when `fields`
+// was scanned. Proved this is a real (not theoretical) risk with a fixture test:
+// an `input` event handler that inserts a sibling element ahead of the email field
+// made `nth(match.field.index)` resolve to the newly-inserted element instead of
+// email. Ashby's own adapter comment already flags it as "more dynamically
+// rendered than Greenhouse/Lever's", and Greenhouse (F5) is separately confirmed to
+// mutate its DOM mid-fill (the #resume input unmounting after a file is accepted) —
+// so this isn't a hypothetical concern for this class of ATS. `id`/`name` survive
+// a DOM reorder or sibling insertion; a raw index does not. Falls back to the
+// original index only when a field has neither (e.g. some custom questions).
+function locatorForField(page, field) {
+  if (field.id) return page.locator(`[id="${field.id}"]`).first();
+  if (field.name) return page.locator(`[name="${field.name}"]`).first();
+  return page.locator('input, textarea, select').nth(field.index);
+}
+
 async function fillApplication(page, profile) {
   await ensureApplicationFormVisible(page);
   const fieldsFilled = {};
@@ -74,9 +94,7 @@ async function fillApplication(page, profile) {
     if (!value) return;
     const match = bestMatch(fields, key);
     if (!match) return;
-    // `fields` entries are returned by document order from fieldTaxonomy.scanFields,
-    // so `nth(index)` on the same combined selector lines back up with the scan.
-    const locator = page.locator('input, textarea, select').nth(match.field.index);
+    const locator = locatorForField(page, match.field);
     if (isFile) {
       await locator
         .setInputFiles({ name: profile.resumeFileName || 'resume.pdf', mimeType: 'application/pdf', buffer: value })

@@ -60,9 +60,21 @@ async function fillApplication(page, profile) {
   // unknown structure -- this adapter's entire premise -- that risk is at least as
   // real as it was for Ashby, arguably more so since there's no hand-verified
   // selector set to fall back to at all.
+  // field.id/field.name are read straight off untrusted, third-party page DOM
+  // attributes -- found and fixed 2026-08-21 (security review), same bug and same
+  // fix as ashbyAdapter.js's locatorForField(): interpolating them unescaped into
+  // this quoted attribute selector lets a crafted id/name value (containing a `"`
+  // that breaks out of the quoted value) redirect this locator to resolve against
+  // a different element than the one bestMatch() actually scored -- breaking the
+  // confidence-scoring's field-to-target guarantee this code otherwise relies on.
+  // Escaping backslash/quote is what a quoted CSS attribute-value string actually
+  // needs to stay a literal string -- NOT the DOM's CSS.escape() (CSS is not a
+  // Node.js global; this function runs in Node via page.locator(), not inside a
+  // page.evaluate() browser callback).
+  const escapeAttrValue = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const locatorForField = (field) => {
-    if (field.id) return page.locator(`[id="${field.id}"]`).first();
-    if (field.name) return page.locator(`[name="${field.name}"]`).first();
+    if (field.id) return page.locator(`[id="${escapeAttrValue(field.id)}"]`).first();
+    if (field.name) return page.locator(`[name="${escapeAttrValue(field.name)}"]`).first();
     return page.locator('input, textarea, select').nth(field.index);
   };
 

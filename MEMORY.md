@@ -46,7 +46,7 @@ touching what.
 | F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
 | F12 | Live-mode rollout & safety ops | 🔴 Blocked on F5/F6/F9/F10 | Unassigned | Now also requires: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17) |
 | F13 | Unified application tracking (source, resume link, ghosted) | ✅ Done, verified | Claude (session) | Closes the pre-existing "Apply button doesn't track" gap too — see Decisions Log 2026-08-17. 2026-08-21: code-review fix — `isGhosted()` had a real bug (measured from `updatedAt` instead of `appliedAt` for still-`'applied'` rows, so it never actually detected a freshly-ghosted application), fixed and tested for the first time (0 tests before). Migration confirmed applied cleanly against real Neon. Lives in F1's branch, not a separate F13 branch — see that entry's note |
-| F14 | Email-based application status auto-detection | 🔵 Researched + specified, not built | Unassigned | User opted in to scoping this — needs a real Google Cloud OAuth app before any code can be tested |
+| F14 | Email-based application status auto-detection | 🔵 Researched + specified, not built | Claude (session) | User opted in to scoping this — needs a real Google Cloud OAuth app before any code can be tested. 2026-08-21: full bug-check pass over the scaffold found and fixed two real bugs despite nothing here executing yet (missing Prisma reverse relation; a `requireAuth`+`sameSite:strict` combo that would 401 every real OAuth callback) — see Decisions Log. Still not built, still needs the same OAuth-app sign-off before real implementation starts |
 
 Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 not started · ⚠️ flag worth reading before touching
 
@@ -538,6 +538,66 @@ Full backend suite re-run clean afterward: 52 tests, 45 pass, 7 skip, 0 fail.
 rather than leaving it open indefinitely as a "someday" item — and the idempotent-
 return approach lets the fix land without also silently making the harder, still-
 unmade "can you ever re-apply" product decision.
+
+### 2026-08-21 — F14: bug-check pass on the scaffold, before any real implementation
+
+The user asked to "fully check found bugs and fix them on F14" alongside the
+duplicate-application-guard fix above — same rigor as F1-F13, applied to F14 even
+though F14 itself is deliberately unbuilt (needs a real Google Cloud OAuth app and
+explicit team sign-off before real logic gets written, per the plan). First
+checked whether F14 has a dedicated origin branch, learning directly from the F13
+mistake: it doesn't (same situation as F13) — `origin/master` already has F14's
+scaffold, byte-identical to what's on `f1-data-model-credential-encryption`'s
+working tree, and the `EmailIntegration` schema comment block is untouched by any
+of F1's own changes. So this landed on F1's branch too, same as F13.
+
+Reviewed `backend/src/routes/emailIntegration.js`, `backend/jobs/emailStatusSync.js`,
+and the commented-out `EmailIntegration` model. Found two real, provable bugs —
+both would only surface once someone followed the scaffold's own "uncomment this
+and implement" instructions, but both are provably wrong right now, not
+speculative:
+
+1. **Missing Prisma reverse relation.** `EmailIntegration`'s `user User
+   @relation(...)` field has no matching `emailIntegrations EmailIntegration[]`
+   on `User`. Proved it with `npx prisma validate` against a scratch copy of the
+   schema with only the model uncommented — fails with P1012, "the relation field
+   `user`... is missing an opposite relation field on the model `User`." Fixed by
+   adding the matching commented-out field to `User`, with a note that both sides
+   must be uncommented together. Re-validated: the paired version passes, and the
+   real (still-commented) schema still validates cleanly as-is, unchanged.
+2. **`requireAuth` on `/callback`, combined with `sameSite: 'strict'`, breaks the
+   feature outright.** `/callback` is hit via a top-level cross-site redirect from
+   `accounts.google.com` after the user consents. Confirmed via `app.js` that the
+   session cookie is `sameSite: 'strict'` project-wide — which withholds the
+   cookie on cross-site requests, including a top-level OAuth redirect (unlike
+   `'lax'`, which would allow it). `requireAuth` would 401 on every real callback,
+   since `req.session.userId` would never be populated on that specific request.
+   Removed `requireAuth` from `/callback` only — `/connect` and `/disconnect`
+   correctly keep it, since both are same-site, user-initiated requests with a
+   live session. Also caught and corrected a related design flaw the scaffold's
+   own TODO had: it said to put `req.session.userId` directly in the OAuth
+   `state` param. Since `/callback` can no longer cross-check that against a
+   session, a raw userId in `state` is attacker-tamperable — anyone completing
+   their own Google consent could edit `state` to a victim's userId in the
+   browser and get their own Gmail tokens attached to the victim's account.
+   Rewrote the TODO to specify the actual fix: a random opaque `state` token
+   minted in `/connect`, stored as `oauth_state:{token} -> userId` in Redis with
+   a short TTL, looked up and deleted (one-time use) in `/callback` — never
+   trusted directly from the client.
+
+Neither fix implements real OAuth logic — `googleapis` is still not a dependency,
+both routes still return `501`, the model is still commented out, and the sync
+job still runs its inert stub (verified it still executes cleanly, `0
+suggestion(s) created across 0 integration(s)`). This only corrects two things
+that were already provably wrong in the scaffold, so whoever eventually builds
+F14 for real doesn't inherit a design that would have failed on day one. No new
+tests added — there's no real logic yet to test; the fixes were verified directly
+(`prisma validate` before/after, requiring both route files with `node -e` to
+confirm they still load and the stub job still runs).
+
+**Why**: the user explicitly asked for a full bug-check on F14, not just a status
+read — and "fully check" was interpreted as it was for F1-F13: prove a bug exists
+before fixing it, even when the surrounding feature is intentionally unbuilt.
 
 ---
 

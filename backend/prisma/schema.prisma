@@ -43,6 +43,10 @@ model User {
   interviews       Interview[]
   applyCredentials ApplyCredential[]
   applyTasks       ApplyTask[]
+  // emailIntegrations EmailIntegration[] // F14 — uncomment together with the
+  // EmailIntegration model below when F14 is greenlit. Prisma requires the
+  // reverse-relation field on both sides; uncommenting only the model (as its
+  // own comment currently instructs) fails schema validation without this line.
 }
 
 model Resume {
@@ -251,9 +255,14 @@ model ApplyTask {
 // real implementation, same bar as every other schema change in this project.
 // See docs/apply-bot/TECHNICAL_PLAN.md F14 for the full spec, and MEMORY.md's
 // 2026-08-17 entry for the CASA/Google-OAuth-scope-tier research this is built
-// around. When ready: uncomment, run `npx prisma migrate dev`, then wire up
-// backend/src/routes/emailIntegration.js and backend/jobs/emailStatusSync.js
-// (both already scaffolded with matching TODOs).
+// around. When ready: uncomment this model AND the commented
+// `emailIntegrations EmailIntegration[]` line on the User model above (Prisma
+// requires both sides of the relation — see that line's own note, found and
+// fixed 2026-08-21 code review, before this model had no reverse relation and
+// would have failed schema validation the moment it was uncommented alone), run
+// `npx prisma migrate dev`, then wire up backend/src/routes/emailIntegration.js
+// and backend/jobs/emailStatusSync.js (both already scaffolded with matching
+// TODOs).
 //
 // model EmailIntegration {
 //   id                    String    @id @default(cuid())

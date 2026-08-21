@@ -324,3 +324,39 @@ run today.
 - [ ] Approving a suggestion updates the status correctly; ignoring/rejecting one
       leaves the status untouched
 - [ ] Disconnecting the integration deletes or invalidates the stored refresh token
+
+**2026-08-21 (code review, before any of this was implemented)**: full bug-check
+pass over F14's scaffold (`emailIntegration.js`, `emailStatusSync.js`, the
+commented-out `EmailIntegration` model). Two real, provable bugs found and fixed
+even though nothing here executes real logic yet — both would have surfaced the
+moment someone followed the scaffold's own "uncomment + implement" instructions:
+
+1. **Schema**: the commented-out `EmailIntegration` model declares `user User
+   @relation(...)`, but `User` had no matching reverse-relation array field.
+   Confirmed via `npx prisma validate` against a scratch copy with just the model
+   uncommented — fails with "the relation field `user`... is missing an opposite
+   relation field on the model `User`" (error code P1012). Fixed by adding the
+   matching `emailIntegrations EmailIntegration[]` line to `User`, commented out
+   in lockstep with the model, with a note to uncomment both together. Re-verified
+   `prisma validate` passes once both sides are uncommented, and that the real
+   (still-commented) schema still validates cleanly as-is.
+2. **Route**: `GET /callback` had `requireAuth` on it, but this route is hit via a
+   top-level cross-site redirect from `accounts.google.com`, and the project's
+   session cookie is `sameSite: 'strict'` everywhere (`backend/CLAUDE.md`) —
+   which withholds the cookie on exactly this kind of cross-site navigation.
+   `requireAuth` would 401 on every real OAuth callback, breaking the feature
+   outright the day it's implemented. Removed `requireAuth` from `/callback`
+   only (`/connect` and `/disconnect` correctly keep it — both are same-site,
+   user-initiated requests). Also corrected the accompanying design note: the
+   original TODO said to put `req.session.userId` directly in the OAuth `state`
+   param, which is attacker-tamperable and, without a session to cross-check it
+   against on `/callback`, would let anyone edit `state` to a victim's userId and
+   attach their own Gmail tokens to that victim's account. Rewrote the TODO to
+   specify the standard fix: a random opaque `state` token minted in `/connect`,
+   mapped to the userId in Redis with a short TTL, looked up and deleted
+   (one-time use) in `/callback` instead of trusted from the client.
+
+Neither fix required implementing real OAuth logic — `googleapis` still isn't a
+dependency, the routes still return `501`, and the model is still commented out.
+This only corrects two things that were already provably wrong in the scaffold
+itself, so the first real implementation attempt doesn't inherit them.

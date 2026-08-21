@@ -32,16 +32,39 @@ const router = express.Router();
 router.get('/connect', requireAuth, async (req, res) => {
   // TODO(F14): build the Google OAuth consent URL requesting `gmail.readonly`
   // (needed for message body/snippet text, not just headers — see F14's spec for
-  // why gmail.metadata isn't enough) and redirect the user to it. Include
-  // req.session.userId in the OAuth `state` parameter so /callback below knows
-  // which user to attach the resulting tokens to.
+  // why gmail.metadata isn't enough) and redirect the user to it.
+  //
+  // `state` param — found & corrected 2026-08-21 (code review), before any of
+  // this was wired up: do NOT put req.session.userId directly in `state`. That
+  // value is attacker-visible/tamperable in the browser, and /callback below
+  // can't fall back on the session to double-check it (see that route's own
+  // note) — so a raw userId in state lets anyone who completes their own Google
+  // consent screen edit the state param to a victim's userId and get their own
+  // Gmail tokens attached to the victim's account. Instead: generate a random
+  // opaque token (crypto.randomBytes(32).toString('hex')), store
+  // `oauth_state:{token} -> req.session.userId` in Redis (redisClient, ~10 min
+  // TTL, same client health.js already pings), and pass only the opaque token
+  // as `state`. /callback looks the userId up server-side and deletes the key
+  // (one-time use) — never trusts a client-supplied identifier directly.
   return res.status(501).json({ error: 'Not implemented — see docs/apply-bot/TECHNICAL_PLAN.md F14' });
 });
 
-router.get('/callback', requireAuth, async (req, res) => {
-  // TODO(F14): exchange the authorization code for tokens, encrypt the refresh
-  // token via cryptoService.js's existing AES-256-GCM scheme (reuse it — don't
-  // build a second encryption scheme), and store it on a new EmailIntegration row
+// No requireAuth here — found & fixed 2026-08-21 (code review). This route is
+// hit via a top-level cross-site redirect FROM accounts.google.com, and
+// app.js's session cookie is `sameSite: 'strict'` project-wide (backend/
+// CLAUDE.md) — strict cookies are withheld on any cross-site request, including
+// a top-level navigation like an OAuth redirect, unlike 'lax'. requireAuth here
+// would 401 on every real callback since req.session.userId would never be
+// populated on this specific request, breaking the feature outright. The user
+// is identified via the opaque `state` token minted in /connect above instead
+// (looked up in Redis, then deleted so it's one-time use) — not via session.
+router.get('/callback', async (req, res) => {
+  // TODO(F14): look up req.query.state in Redis (`oauth_state:{state}`) to
+  // recover the userId that initiated this flow; 400 if missing/expired/already
+  // consumed. Delete the key immediately (one-time use, prevents replay).
+  // Exchange the authorization code for tokens, encrypt the refresh token via
+  // cryptoService.js's existing AES-256-GCM scheme (reuse it — don't build a
+  // second encryption scheme), and store it on a new EmailIntegration row
   // (userId, provider: 'gmail', refreshTokenEncrypted, iv, authTag, connectedAt,
   // isActive: true). Never log the raw token, even at debug level.
   return res.status(501).json({ error: 'Not implemented — see docs/apply-bot/TECHNICAL_PLAN.md F14' });

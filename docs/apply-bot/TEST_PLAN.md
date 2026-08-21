@@ -497,6 +497,37 @@ Chromium against the built frontend served by the backend — 9/9 checks passed.
       clamping for a pointer that left the canvas mid-drag, and a not-yet-laid-out
       canvas reporting zero width are all asserted
 
+**2026-08-20 follow-up (code review)**: carried forward all six previously-
+established fixes from F2/F7/F8/F9/F10 (`worker.js`/`internal.js` mode-checks,
+`genericAdapter.js`'s `locateSubmit`/`fillByIndex`, `applyBotFailureReport.js`'s
+`unknownOutcome`, `applyBotSelect.test.js`'s Redis-probe hang fix,
+`applyTaskCallback.test.js`'s fixture mode) — this branch predates all of them.
+Full verification: apply-bot suite 38/38 pass; frontend suite 16/16 pass;
+`npm run build` succeeds (2327 modules, matches this branch's own claim).
+
+**Flagged, not fixed — a narrow pause-reason staleness gap.**
+`ApplyBotLiveView.jsx`'s `onmessage` handler has a `'pause'` case that updates
+`reason`/`instructions` mid-session ("the reason can change mid-session... follow
+it rather than trusting the mount-time prop") — but `backend/apply-bot/src/
+liveView.js` never actually sends a `type: 'pause'` message; it only ever sends
+`'frame'` and `'resumed'` (confirmed by reading the file directly). Combined with
+two other facts — `AutoApply.jsx`'s `liveTask` state is a one-time snapshot never
+refreshed from the polled `tasks` list while the modal is open, and
+`ApplyBotLiveView`'s `useState(pauseReason)` only captures its prop at mount
+time, not on every re-render — a task that hits a CAPTCHA, gets resolved, then
+hits a DIFFERENT challenge type (e.g. an email-verification code) later in the
+SAME session would show stale "solve the CAPTCHA" instructions instead of the
+code-entry UI. Judged low-frequency in the CURRENT architecture: per `worker.js`,
+each challenge triggers its own independent `waitForHumanResolution()`
+pause/report/re-check cycle rather than a fluid in-place transition, so a second
+challenge very likely produces a fresh `paused_human` report the human would see
+via the task list (which F11's own `ACTIVE_STATUSES` fix correctly keeps polling)
+rather than a silent same-session change — but the WS-level "reason can change
+mid-session" mechanism this component's own comment describes doesn't actually
+work as written, and closing it properly would mean coordinating a real fix
+across three files/layers rather than a narrow bug fix. Recorded here rather than
+silently left, or "fixed" with an untested multi-file change under time pressure.
+
 ## F12 — Live-Mode Rollout & Safety Ops
 
 - [ ] 🖐️ **Kill-switch drill**: flip `apply_bot:enabled` off mid-run, confirm no new

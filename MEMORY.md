@@ -43,7 +43,7 @@ touching what.
 | F8 | Generic engine (non-ATS sources) | ✅ Done, verified | Claude (session) | F8a + F8b built and verified against real postings; `genericAdapter.js` implemented. F8c researched and deliberately closed — 3/16 aggregator postings reachable, and 2 of those 3 land on adapters we already have. `APPLY_BOT_GENERIC_ENABLED` stays false as a *conclusion*, not a gap |
 | F9 | Failure measurement & alerting | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon — all 4 test-plan items pass. Remaining half built (`jobs/applyBotFailureReport.js`); 1 real design bug found & fixed during verification (report skipped entirely when the kill switch was off). Item 2 verified at logic level only — frontend has no test tooling |
 | F10 | Testing & verification harness | ✅ Done, verified | Claude (session) | 78 passing / 0 skipped / 0 failing in 48s (43 total at start of 2026-08-19). Last blockers cleared: Playwright installed, callback test now starts its own server, and `applyBotSelect.js` went 16.98% -> 69.75% line / 100% branch. `npm run test:coverage` added |
-| F11 | Credential & session management UX | ✅ Done, verified | Claude (session) | Both halves built: Settings credential CRUD + `ApplyBotLiveView` wired into AutoApply. Verified through a real browser, 9/9 checks. 3 pre-existing bugs found and fixed (stale `paused_captcha` in 3 places incl. a polling bug, `pauseReason` never exposed by the API). Frontend now has tests: 16, zero new dependencies |
+| F11 | Credential & session management UX | ✅ Done, verified | Claude (session) | Both halves built: Settings credential CRUD + `ApplyBotLiveView` wired into AutoApply. Verified through a real browser, 9/9 checks. 3 pre-existing bugs found and fixed (stale `paused_captcha` in 3 places incl. a polling bug, `pauseReason` never exposed by the API). Frontend now has tests: 16, zero new dependencies. Code-review pass 2026-08-20 — carried forward all 6 fixes from F2/F7-F10; flagged (not fixed) a narrow pause-reason WS staleness gap; re-confirmed the npm ci/vite-8 peer-dep blocker is still real and identified the minimal fix (`@vitejs/plugin-react@5.2.0`), left unresolved pending sign-off. **All 11 branches (F1-F11) now reviewed this session.** |
 | F12 | Live-mode rollout & safety ops | 🟡 Unblocked, not started | Unassigned | F5/F6/F8/F9/F10 all done now — no build blockers left. What remains is F12 own checklist: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17), kill-switch drill, and the first real live-mode application |
 | F13 | Unified application tracking (source, resume link, ghosted) | ✅ Built, ⚠️ untested | — | Closes the pre-existing "Apply button doesn't track" gap too — see Decisions Log 2026-08-17 |
 | F14 | Email-based application status auto-detection | 🔵 Researched + specified, not built | Unassigned | User opted in to scoping this — needs a real Google Cloud OAuth app before any code can be tested |
@@ -53,6 +53,85 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-20 — F11 code-review pass: 6 fixes carried forward, one deployment blocker re-confirmed, one staleness gap flagged — the last of the 11 branches
+Branch: `f11-credential-ux`. Closes out the "fix every bug, verify against the
+test plan, one branch at a time" pass that started at F1 (see every entry
+below) — this was the last of the 11 feature branches the teammate created.
+
+**Carried forward, all confirmed present since this branch predates each
+fix**: F2/F7/F8/F9/F10's `worker.js` mode-check fix, `internal.js`'s
+mode-check fix, `genericAdapter.js`'s `locateSubmit`/`fillByIndex` fixes (with
+matching tests in `adapters.test.js`), `applyBotFailureReport.js`'s
+`unknownOutcome` fix (with a matching test), `applyBotSelect.test.js`'s
+Redis-probe hang fix, and `applyTaskCallback.test.js`'s fixture `mode` fix.
+Full backend suite re-run clean: 81 tests, 70 pass, 11 skip (Redis-gated,
+correct), 0 fail. Apply-bot suite: 38/38 pass.
+
+**Verified the three pre-existing bugs this branch's own session found were
+actually fixed correctly** (not just claimed): grepped the whole frontend for
+`paused_captcha` — none remain, only historical comments; confirmed
+`routes/applyTasks.js`'s `publicTask()` now includes `pauseReason`. Both
+correct.
+
+**Reviewed the new frontend surface for real bugs, found none in the
+credential CRUD or `useApplyTasks.js`.** `Settings.jsx`'s `ApplyCredentialsCard`
+correctly never pre-fills a password (matches `applyCredentials.js`'s
+`publicCredential()`, which strips every encrypted field), correctly
+distinguishes save/delete mutation variable shapes in their `onSuccess`
+handlers, and the delete confirmation copy accurately describes the real
+consequence (skip, not guess). `useApplyTasks.js`'s `refetchInterval` correctly
+re-evaluates on every render, so polling resumes the moment a new task becomes
+active, not just the one it started watching. Frontend's own test suite
+(`liveViewProtocol.test.js`, pure functions for Contract B) re-run: 16/16 pass.
+`npm run build`: succeeds, 2327 modules, matches this branch's own claim.
+
+**Flagged, not fixed — a narrow pause-reason WS staleness gap.**
+`ApplyBotLiveView.jsx`'s comment claims the live-view can follow a mid-session
+challenge-type change ("a CAPTCHA cleared, then an emailed code asked for") via
+a `type: 'pause'` WebSocket message — but `backend/apply-bot/src/liveView.js`
+only ever sends `'frame'` and `'resumed'` (confirmed directly, grepped every
+`type: '...'` it sends); the `'pause'`-handling branch in the frontend's
+`onmessage` is dead code today. Two more contributing gaps found while tracing
+this: `AutoApply.jsx`'s `liveTask` state is a one-time snapshot never refreshed
+from the polling `tasks` list while the modal stays open, and
+`ApplyBotLiveView`'s `useState(pauseReason)` only captures its prop value at
+mount, not on subsequent re-renders. Judged this low-frequency rather than
+urgent given the CURRENT worker.js flow: each detected challenge triggers its
+own independent pause/report/re-check cycle (not an in-place transition), so a
+second, different challenge very likely surfaces as a fresh `paused_human` row
+the human notices via the task list (which F11's own `ACTIVE_STATUSES` fix
+correctly keeps polling for) rather than a silent same-session change — but
+the specific mechanism the component's own comment describes doesn't work as
+written. Not fixed: closing this properly needs coordinated changes across
+three files/layers (should the backend proactively push a reason-change
+message? should `liveTask` re-sync from polling? should the component remount
+on reason change via a `key`?), which is a design decision beyond a narrow bug
+fix, especially under the time constraints of finishing the full 11-branch
+pass. Recorded explicitly rather than silently skipped.
+
+**Re-confirmed the `npm ci`/vite-8 peer-dependency blocker independently.**
+Reproduced the exact same `ERESOLVE` failure this branch's own session first
+found (`@vitejs/plugin-react@4.5.0` needs `vite@^4-6`, project pins
+`vite@8.0.16`) — still real, still blocks Railway's documented build command.
+Went one step further without applying anything: checked what the fix would
+actually look like. `@vitejs/plugin-react@5.2.0`'s peer range
+(`^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0`) includes vite 8 and needs no
+other new peer packages — the minimal fix. `6.x` also supports vite 8 but pulls
+in `oxc-transform-react`/`@rolldown/plugin-babel`/`babel-plugin-react-compiler`,
+new toolchain pieces beyond what this blocker calls for. Left unapplied,
+matching the prior session's own judgment that a deploy-pipeline dependency
+change is a different risk class than the code-logic fixes made everywhere
+else this session and deserves explicit sign-off rather than being bundled in
+silently. Added to the Open Questions entry rather than creating a duplicate.
+
+**Why**: this closes the loop on all 11 branches. F1-F11 have each now had a
+real code-review pass, with confirmed-and-fixed bugs verified live wherever
+this environment allows, and every genuine gap — whether a fix was applied or
+just found and documented — recorded here rather than left implicit. Nothing
+has been committed or pushed on any of the 11 branches; each fix sits stashed
+on its own branch (see each branch's own stash message) pending the user's
+go-ahead.
 
 ### 2026-08-19 — F11 completed: credential UI, live-view wired to F7's real backend, and three pre-existing frontend bugs found on the way
 Branch: `f11-credential-ux` (off `f10-testing-harness`; F8/F9/F10 are all still
@@ -1174,6 +1253,18 @@ first time someone actually fills in a TODO.
   Not done here: it is a dependency change outside F11's scope and wants explicit
   sign-off. Local verification for F11 used `npm install --legacy-peer-deps`, which
   changes nothing in the repo. **Unresolved.**
+  **2026-08-20 re-confirmed independently** during this session's F11 code-review
+  pass: `npm ci` in `frontend/` reproduces the exact same `ERESOLVE` error today.
+  Checked what a fix would look like without deciding to apply it (this is a
+  deploy-pipeline change, a different risk class than the code-logic bugs fixed
+  elsewhere this session, and it was already deliberately left for sign-off rather
+  than overlooked): `@vitejs/plugin-react@5.2.0`'s peer range is
+  `^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0` — includes vite 8, resolves
+  cleanly, and needs no other new peer packages. `6.x` also supports vite 8 but
+  additionally requires `oxc-transform-react`, `@rolldown/plugin-babel`, and
+  `babel-plugin-react-compiler` — new toolchain pieces, a bigger change than this
+  blocker calls for. **`5.2.0` is the minimal fix** if/when this gets signed off.
+  Still unresolved — not applied.
 - **What F8's definition of done actually is.** `TECHNICAL_PLAN.md` leaves it
   undefined on purpose, pending a scoping pass "once F4-F7 are done and real data
   exists on how often non-ATS `applyUrl`s actually resolve to something fillable at

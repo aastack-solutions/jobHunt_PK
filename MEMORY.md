@@ -37,7 +37,7 @@ touching what.
 | F2 | Backend orchestration API (claim/callback/select) | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon+Upstash — all 10 test-plan items pass; found & fixed a real bug (bullConnection.js dropped TLS for rediss:// — hung every BullMQ queue, not just this one) |
 | F3 | apply-bot service scaffold & worker runtime | ✅ Done, verified (2 items env-blocked) | Claude (session) | Verified 2026-08-19 locally (no Docker) — full worker pipeline, TIMEOUT deadline, maxStalledCount:0 all confirmed live; docker build (no Docker) and real SIGTERM delivery (Windows limitation) need the actual Railway deploy |
 | F4 | Lever adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — name/email/resume selectors confirmed correct, CAPTCHA (hCaptcha) confirmed present on all 5 (resolves prior open question), 2 real bugs found & fixed (locateSubmit selector, isAlreadySolved textarea-vs-input check) |
-| F5 | Greenhouse adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings on the new job-boards.greenhouse.io domain — selectors correct as-is (no code bug found), CAPTCHA confirmed present on all 5 (1 only post-fill, confirming the dual pre/post check matters), hydration-timing question resolved (no wait needed) |
+| F5 | Greenhouse adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings; code-review fix 2026-08-20 — requiredOk's `\|\| profile.fullName` fallback could inflate confidence to 90 with the name field left blank (abstain-rule bypass), fixed + 2 new tests, run for real; also carried F4's worker.js CAPTCHA mode-check fix onto this branch |
 | F6 | Ashby adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA presence unconfirmed by research; login-page detection now automatic |
 | F7 | CAPTCHA / bot-challenge live-view | 🔴 Not started | Unassigned | Scope grew: must also cover email-verification challenges AND make TASK_DEADLINE_MS pause-aware (see Decisions Log 2026-08-17) |
 | F8 | Generic engine (non-ATS sources) | 🔴 Not started, gated off | Unassigned | `APPLY_BOT_GENERIC_ENABLED=false` — don't enable until built |
@@ -53,6 +53,57 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-20 — F5 code-review fix: requiredOk's profile.fullName fallback could bypass the abstain rule; also carried F4's worker.js fix onto this branch
+Branch: `f5-greenhouse-adapter`. Same "fix every bug, verify against the test
+plan" pass as F1-F4 (see those entries below).
+
+**Real bug found**: `greenhouseAdapter.js`'s `fillApplication()` computed
+`requiredOk = Boolean(fieldsFilled.email && (fieldsFilled.first_name ||
+profile.fullName) && fieldsFilled.resume_upload)`. The `|| profile.fullName`
+fallback is the problem — `profile.fullName` is the *input* data (always
+truthy whenever the applicant has a name at all), not proof the name field
+was actually located and filled in the real form. On a board layout the
+`#first_name`/`job_application[first_name]` selectors don't recognize,
+`fieldsFilled.first_name` stays unset but `requiredOk` would still evaluate
+true off `profile.fullName` alone — confidence scores 90 (well above the
+abstain threshold of 60) with the applicant's name never actually written
+into the form. In live mode that's a submission with a blank name field; in
+shadow mode it's a false "this would have worked" signal. Directly
+contradicts the plan's own description of the abstain rule as "the key
+correctness rail, since there's zero human review." Compared against
+`leverAdapter.js`'s equivalent check (`fieldsFilled.full_name`, no fallback)
+to confirm Greenhouse was the one written inconsistently, then fixed to match:
+`fieldsFilled.first_name` only.
+
+**Verified for real, not just by inspection**: added
+`test/greenhouseAdapter.test.js` with two fixture-HTML cases (Playwright now
+actually installed in this environment as of the F3 entry below) — one board
+missing the `#first_name` element (must score 40, not 90) and one with it
+present (must score 90 with `fieldsFilled.first_name` populated). Confirmed
+the test actually catches the bug by temporarily restoring the old logic and
+re-running: failed as expected (`90 !== 40`), then restored the fix and
+re-ran clean. Also smoke-tested `fillApplication()` directly against a real
+Greenhouse sandbox posting (`job-boards.greenhouse.io/thehonestcompanysandbox`)
+post-fix: all required fields filled correctly, confidence 90, no regression.
+Full suite: 27/27 pass.
+
+**Also carried F4's `worker.js` CAPTCHA-gate fix onto this branch**: F5 was
+branched before that fix existed, so it had the same bug (CAPTCHA detection
+failed the task unconditionally regardless of `task.mode`, defeating shadow
+mode for any CAPTCHA-protected ATS). Directly relevant here since this
+session's own 2026-08-19 verification confirmed reCAPTCHA present on all 5
+Greenhouse postings tested (4/5 pre-fill, 1/5 — ZipRecruiter — only
+post-fill). Applied the identical fix (mode-gated immediate-fail, CAPTCHA
+detection recorded in `fieldsFilled._captchaDetectedPreFill`/
+`_captchaDetectedPostFill` for shadow mode instead of failing the task). See
+F4's entry below for the full rationale and the plan citation that grounds it.
+
+**Why**: the same abstain-rule-bypass shape (an OR-fallback to input data
+instead of requiring proof-of-fill) is exactly the kind of bug worth
+specifically checking for in the other two adapters (F6/F8) once those
+branches are picked up, given it was found here by comparing two supposedly
+equivalent adapters and finding they disagreed.
 
 ### 2026-08-19 — F5 verified against 5 real live Greenhouse postings; domain migration caught, hydration question resolved, no code bugs found
 Branch: `f5-greenhouse-adapter` (branched from `master` after merging F4 in — `git

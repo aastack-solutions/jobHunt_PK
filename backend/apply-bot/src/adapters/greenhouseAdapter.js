@@ -88,7 +88,15 @@ async function fillApplication(page, profile) {
     if (match) fieldsFilled[key] = { unmapped: true, label: match.field.label || match.field.name };
   }
 
-  const requiredOk = Boolean(fieldsFilled.email && (fieldsFilled.first_name || profile.fullName) && fieldsFilled.resume_upload);
+  // Deliberately checks fieldsFilled.first_name — proof the field was actually
+  // located AND filled — not `profile.fullName` (which only proves we HAD the
+  // data, not that it made it into the form). Falling back to the input data here
+  // would defeat the plan's Abstain rule: a board where the first_name selector
+  // fails to match would still score confidence 90 even with the name field left
+  // completely blank, since profile.fullName is always truthy when a user has a
+  // name at all. Matches leverAdapter.js's equivalent check (fieldsFilled.full_name,
+  // no such fallback) — this was the one inconsistent adapter.
+  const requiredOk = Boolean(fieldsFilled.email && fieldsFilled.first_name && fieldsFilled.resume_upload);
   return { fieldsFilled, confidence: requiredOk ? 90 : 40 };
 }
 

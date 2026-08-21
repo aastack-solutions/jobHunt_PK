@@ -177,6 +177,28 @@ comments and this test plan originally assumed) has been fully replaced by
 `job-boards.greenhouse.io` — several search-result URLs on the old domain all
 404'd/redirected. All 5 postings below are on the new domain.
 
+**2026-08-20 follow-up (code review fix)**: found and fixed a real bug in
+`greenhouseAdapter.js`'s confidence scoring, distinct from anything the
+2026-08-19 session tested. `requiredOk` checked
+`fieldsFilled.first_name || profile.fullName` — the `profile.fullName`
+fallback meant that if the `#first_name` selector ever failed to match (a
+board layout variant the adapter doesn't recognize), confidence would still
+score 90 (bypassing the abstain rule, and in live mode allowing a submit)
+purely because the *input data* existed, even though the name field was left
+completely blank in the actual form. `leverAdapter.js`'s equivalent check
+(`fieldsFilled.full_name`, no such fallback) was already correct — this was
+the one inconsistent adapter. Fixed to check `fieldsFilled.first_name` only.
+Added a permanent regression test, `test/greenhouseAdapter.test.js` (2 cases):
+confirmed it fails on the old logic (90 instead of the expected 40) and
+passes on the fix — both run for real against actual Chromium in this
+session. Also applied F4's `worker.js` CAPTCHA-gate fix to this branch too
+(mode-check before failing shadow-mode tasks on a detected CAPTCHA — see F4's
+2026-08-20 entry in MEMORY.md; this branch had the same pre-fix code, and
+Greenhouse is directly affected since CAPTCHA was confirmed present on all 5
+postings tested below). Smoke-tested `fillApplication()` against a real
+Greenhouse sandbox posting after both fixes: fields filled correctly,
+confidence 90, no regression.
+
 - [x] 🖐️ Against 3+ different real, currently-open Greenhouse postings, shadow mode
       correctly fills first name / last name / email / resume upload — verify
       against the captured `before-fill`/`after-fill` screenshots, not just the

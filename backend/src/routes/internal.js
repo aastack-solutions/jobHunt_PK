@@ -213,12 +213,12 @@ router.post('/apply-bot/tasks/:id/callback', requireApplyBotSecret, async (req, 
   // A real submission (live mode only) creates the Application record — the only
   // place the bot creates one; the existing manual POST /api/applications is untouched.
   //
-  // Explicit task.mode === 'live' check added 2026-08-20 (code review, same fix
-  // carried across F2/F7/F8/F10/F11 — see MEMORY.md): the comment above already
-  // said "live mode only" but the code never actually checked task.mode. Under
-  // the current worker.js, shadow mode never reports status: 'submitted' (only
-  // 'shadow_complete'), so this wasn't actively triggering — closed here too as
-  // defense-in-depth.
+  // Explicit task.mode === 'live' check added 2026-08-21 (code review, same fix
+  // carried across F2/F7/F8/F10/F11/F13 — see MEMORY.md): the comment above
+  // already said "live mode only" but the code never actually checked
+  // task.mode. Under the current worker.js, shadow mode never reports status:
+  // 'submitted' (only 'shadow_complete'), so this wasn't actively triggering —
+  // closed here too as defense-in-depth.
   if (status === 'submitted' && task.mode !== 'live') {
     logger.warn(
       `internal: apply-bot task ${task.id} reported 'submitted' but mode is '${task.mode}', not 'live' — this should never happen; skipping Application creation`

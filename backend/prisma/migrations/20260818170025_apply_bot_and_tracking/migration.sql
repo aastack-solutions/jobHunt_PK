@@ -49,9 +49,6 @@ CREATE TABLE "ApplyTask" (
 );
 
 -- CreateIndex
-CREATE INDEX "Application_resumeId_idx" ON "Application"("resumeId");
-
--- CreateIndex
 CREATE INDEX "ApplyCredential_userId_idx" ON "ApplyCredential"("userId");
 
 -- CreateIndex
@@ -68,6 +65,9 @@ CREATE INDEX "ApplyTask_jobId_idx" ON "ApplyTask"("jobId");
 
 -- CreateIndex
 CREATE INDEX "ApplyTask_status_idx" ON "ApplyTask"("status");
+
+-- CreateIndex
+CREATE INDEX "Application_resumeId_idx" ON "Application"("resumeId");
 
 -- AddForeignKey
 ALTER TABLE "Application" ADD CONSTRAINT "Application_resumeId_fkey" FOREIGN KEY ("resumeId") REFERENCES "Resume"("id") ON DELETE SET NULL ON UPDATE CASCADE;

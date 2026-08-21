@@ -12,9 +12,64 @@ these can't be automated away and shouldn't be skipped just because they're slow
 
 ---
 
+## Security Audit — 2026-08-21 (fixed on every F1-F12 branch)
+
+Cross-cutting, not tied to one feature — see MEMORY.md's 2026-08-21 Decisions
+Log entry for the full exploit chains and verification detail. Summarized here
+so it isn't missed when reading feature-by-feature.
+
+- [x] 🤖 **CRITICAL**: hostname-suffix spoofing in `applyBotPlatform.js` and
+      each ATS adapter's `matches()` (`.includes()` instead of exact/suffix
+      match) — a spoofed applyUrl like `boards.greenhouse.io.attacker.com`
+      would route to the real adapter and exfiltrate a real stored credential.
+      Fixed everywhere with exact-or-subdomain matching, plus a defense-in-
+      depth host re-check in `greenhouseAdapter.login()` itself.
+      `adapters.test.js`/`applyBotPlatform.test.js` cover the regression.
+- [x] 🤖 **MEDIUM**: selector injection in `ashbyAdapter.js`/
+      `genericAdapter.js`'s `locatorForField()` — unescaped `field.id`/
+      `field.name` could redirect a fill to an unrelated element. Proved with
+      a real headless Chromium page. Fixed with Node-safe attribute escaping.
+- [x] 🤖 **MEDIUM**: CSV formula injection in `GET /api/applications/export` —
+      a leading `=`/`+`/`-`/`@` in `notes`/`company`/`jobTitle` executes as a
+      formula when the export is opened in a spreadsheet app. Fixed by
+      defusing only values that actually start with a dangerous character.
+      `applicationsCsvExport.test.js` (F1: `applications.test.js`) covers it.
+- [x] 🤖 **LOW**: `auth.js` login timing side-channel (unknown-email logins
+      skipped `bcrypt.compare` entirely) — fixed by always comparing against
+      either the real hash or a fixed decoy hash of the same cost.
+- [x] 🤖 **LOW**: `auth.js` no session regeneration on login/register — fixed
+      with `req.session.regenerate()` before assigning `userId`.
+- [x] 🤖 **LOW**: `jobFetcher.js`'s `normalizeJob()` didn't validate
+      `applyUrl`'s scheme at all (confirmed a bare non-URL string was
+      previously accepted) — fixed to reject anything that isn't `http(s)`.
+      `auth.test.js` (self-skips without a reachable Redis/DB — see its own
+      header comment) and `jobFetcherApplyUrlScheme.test.js` cover these.
+
+Also corrected a misleading `schema.prisma` comment claiming
+`ApplyTask.fieldsFilled` has real redaction logic — it doesn't; currently safe
+only by construction, not by an actual filter.
+
+---
+
 ## F1 — Data Model & Credential Encryption
 
 **Verified 2026-08-18 against a real Neon Postgres instance — see MEMORY.md.**
+
+**2026-08-20 follow-up (code review fix)**: the review's one F1 finding —
+`ApplyTask.applicationId` had no DB-level FK or index despite being the documented
+audit-trail lookup key — is fixed: added `@@index([applicationId])` and a proper
+`application Application? @relation(..., onDelete: SetNull)`. Migration
+`20260819185748_apply_task_application_fk` applied clean against the same live
+Neon DB, verified end to end (created a real `Application` + `ApplyTask`, confirmed
+the relation actually traces back). Also re-confirmed the credential round-trip and
+the sessionState-clear fix directly via Prisma (not through the HTTP routes — Redis
+still isn't available locally, so `PUT`/`GET`/`DELETE /api/apply-credentials` remain
+unexercised end-to-end; only the underlying data-layer logic those routes call was
+re-verified). Fixing this also surfaced and resolved real cross-branch **migration
+drift**: the shared Neon DB had a migration (`pauseReason`, from F7) applied that
+wasn't in this branch's history, and this branch's own first migration's file had
+been regenerated with reordered-but-equivalent SQL, causing a checksum mismatch —
+both reconciled without any data loss. Full story in `MEMORY.md`.
 
 - [x] 🤖 `npx prisma migrate dev` applies cleanly to a fresh Postgres instance — all
       tables, indexes, and foreign keys created with no errors
@@ -584,21 +639,59 @@ the user's behalf) that only the user should trigger.**
 
 ## F13 — Unified Application Tracking
 
-- [ ] 🖐️ Migration applies cleanly (`source`, `resumeId` columns present)
-- [ ] 🖐️ Manual flow: clicking "Mark as Applied" in `CoverLetterModal` creates an
+- [x] 🖐️ Migration applies cleanly (`source`, `resumeId` columns present) —
+      confirmed live against the real Neon instance: `npx prisma migrate status`
+      reports up to date, and `information_schema.columns` directly confirms
+      `applyUrl`/`resumeId`/`source` all exist on `Application`
+- [x] 🖐️🤖 Manual flow: clicking "Mark as Applied" in `CoverLetterModal` creates an
       `Application` with `source: 'manual'`, `applyUrl` populated from the job, and
-      `resumeId` set to the currently-active resume
+      `resumeId` set to the currently-active resume — the API half is now verified
+      for real via HTTP against a real Neon database (`test/applications.test.js`);
+      the actual browser click itself is not yet exercised, only the endpoint it calls
 - [ ] 🖐️ Bot flow: a `submitted` `ApplyTask` creates an `Application` with
       `source: 'auto_apply_bot'`, and `ApplyTask.applicationId` correctly points
-      back at it
+      back at it — reviewed `internal.js`'s callback handler, correct; also found
+      and fixed the same `task.mode` check gap present across F2/F7/F8/F10/F11
+      (see the follow-up note below)
 - [ ] 🖐️ Re-opening the modal for an already-tracked job shows the disabled
       "Applied" state, not an active "Mark as Applied" button
-- [ ] 🤖 An application with `status: 'applied'` and `appliedAt` 15 days in the past
-      returns `isGhosted: true`; one from yesterday returns `false`
-- [ ] 🤖 `isGhosted` is `false` for `offer`/`rejected`/`withdrawn` regardless of age
-- [ ] 🖐️ CSV export includes the `source` and `applyUrl` columns
+- [x] 🤖 An application with `status: 'applied'` and `appliedAt` 15 days in the past
+      returns `isGhosted: true`; one from yesterday returns `false` — **found and
+      fixed a real bug here, see the follow-up note below**
+- [x] 🤖 `isGhosted` is `false` for `offer`/`rejected`/`withdrawn` regardless of age
+- [ ] 🖐️ CSV export includes the `source` and `applyUrl` columns — reviewed
+      `applications.js`'s CSV `Parser` field list, both present; not yet exercised
+      by actually downloading and opening a real export
 - [ ] 🖐️ Dashboard's `autoAppliedCount`/`ghostedCount` match the actual underlying
-      data
+      data — reviewed `dashboard.js`, both correct by construction (the latter
+      inherits the isGhosted fix below automatically since it calls the same
+      shared function); not yet exercised against real seeded data end to end
+
+**2026-08-21 follow-up (code review fix)**: found and fixed a real bug in
+`applicationHealth.js`'s `isGhosted()` — it measured "days of silence" from
+`updatedAt` for a still-`'applied'` row, but Prisma's `@updatedAt` is auto-managed
+and always reflects the actual write time, ignoring any explicitly-passed value,
+even on `create()`. Confirmed directly against the real database: creating an
+application with `appliedAt` set 15 days in the past still got `updatedAt`
+stamped as the current insert time — so `isGhosted()` always returned `false` for
+a freshly-created row no matter how stale `appliedAt` was, directly contradicting
+this feature's own definition (and the checklist item right above). Fixed: a
+still-`'applied'` row now measures from `appliedAt` (days since it was actually
+sent); a row that's progressed past `'applied'` at least once still measures from
+`updatedAt` (the last real state change). This file had zero test coverage
+before — added `test/applicationHealth.test.js`, 6 pure-function tests (no DB
+needed, since `isGhosted()` never touches one), confirmed to fail on the old code
+and pass on the fix. Also carried forward the established `task.mode === 'live'`
+check onto `internal.js`'s Application-creation branch (same bug shape as F2's
+fix, found present here too since this branch predates it).
+
+**Also found, flagged, not fixed**: `applications.js`'s `POST /` has no
+server-side guard against creating two `Application` rows for the same `jobId` —
+the frontend's disabled-button state (`alreadyTracked`) is a real but
+client-side-only guard, not airtight against two browser tabs or a network
+retry. Not fixed here since the "right" policy (block a second application to
+the same job forever, vs. allow re-applying to a reposted role later) is a
+product decision, not something to assume.
 
 ## F14 — Email-Based Status Auto-Detection
 
@@ -617,3 +710,39 @@ run today.
 - [ ] Approving a suggestion updates the status correctly; ignoring/rejecting one
       leaves the status untouched
 - [ ] Disconnecting the integration deletes or invalidates the stored refresh token
+
+**2026-08-21 (code review, before any of this was implemented)**: full bug-check
+pass over F14's scaffold (`emailIntegration.js`, `emailStatusSync.js`, the
+commented-out `EmailIntegration` model). Two real, provable bugs found and fixed
+even though nothing here executes real logic yet — both would have surfaced the
+moment someone followed the scaffold's own "uncomment + implement" instructions:
+
+1. **Schema**: the commented-out `EmailIntegration` model declares `user User
+   @relation(...)`, but `User` had no matching reverse-relation array field.
+   Confirmed via `npx prisma validate` against a scratch copy with just the model
+   uncommented — fails with "the relation field `user`... is missing an opposite
+   relation field on the model `User`" (error code P1012). Fixed by adding the
+   matching `emailIntegrations EmailIntegration[]` line to `User`, commented out
+   in lockstep with the model, with a note to uncomment both together. Re-verified
+   `prisma validate` passes once both sides are uncommented, and that the real
+   (still-commented) schema still validates cleanly as-is.
+2. **Route**: `GET /callback` had `requireAuth` on it, but this route is hit via a
+   top-level cross-site redirect from `accounts.google.com`, and the project's
+   session cookie is `sameSite: 'strict'` everywhere (`backend/CLAUDE.md`) —
+   which withholds the cookie on exactly this kind of cross-site navigation.
+   `requireAuth` would 401 on every real OAuth callback, breaking the feature
+   outright the day it's implemented. Removed `requireAuth` from `/callback`
+   only (`/connect` and `/disconnect` correctly keep it — both are same-site,
+   user-initiated requests). Also corrected the accompanying design note: the
+   original TODO said to put `req.session.userId` directly in the OAuth `state`
+   param, which is attacker-tamperable and, without a session to cross-check it
+   against on `/callback`, would let anyone edit `state` to a victim's userId and
+   attach their own Gmail tokens to that victim's account. Rewrote the TODO to
+   specify the standard fix: a random opaque `state` token minted in `/connect`,
+   mapped to the userId in Redis with a short TTL, looked up and deleted
+   (one-time use) in `/callback` instead of trusted from the client.
+
+Neither fix required implementing real OAuth logic — `googleapis` still isn't a
+dependency, the routes still return `501`, and the model is still commented out.
+This only corrects two things that were already provably wrong in the scaffold
+itself, so the first real implementation attempt doesn't inherit them.

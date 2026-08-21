@@ -77,12 +77,14 @@ backend/
 │   │                                            F8 generic gate, F8a URL rewrite.
 │   │                                            Added to this manifest 2026-08-19
 │   │                                            BEFORE the file was created.
-│   └── applyBotFailureReport.test.js     ✅[F9] — F9's per-adapter/failure-class
-│                                               numbers against seeded fixture rows;
-│                                               skipped until a live DB exists.
-│                                               Added to this manifest 2026-08-19
-│                                               BEFORE the file was created, per the
-│                                               rule at the top of this section.
+│   ├── applyBotFailureReport.test.js     ✅[F9] — F9's per-adapter/failure-class
+│   │                                           numbers against seeded fixture rows;
+│   │                                           skipped until a live DB exists.
+│   │                                           Added to this manifest 2026-08-19
+│   │                                           BEFORE the file was created, per the
+│   │                                           rule at the top of this section.
+│   └── applicationHealth.test.js         ✅[F13] — added 2026-08-21 code-review pass;
+│                                               isGhosted() had no test coverage at all
 └── apply-bot/                            separate Railway service, see F3
     ├── package.json / Dockerfile / .env.example
     ├── src/
@@ -545,9 +547,13 @@ a human ever sees the live view.
 
 ## F1 — Data Model & Credential Encryption
 
-**Status**: built, not yet run against a live database.
-**Depends on**: nothing. **Shares files with**: F7 (adds `pauseReason` to the schema
-later — see Shared Files rules above; not a concern for F1 itself).
+**Status**: ✅ built AND verified against a real Neon Postgres instance (2026-08-18,
+teammate's own verification per this branch's commit history; follow-up fix +
+re-verification 2026-08-20 — see `MEMORY.md` for both). The one finding from the
+11-branch code review (`applicationId` had no FK/index) is fixed and verified.
+**Depends on**: nothing. **Shares files with**: F7 (the `pauseReason` field is now
+present in this branch's schema too, brought in 2026-08-20 to reconcile cross-branch
+migration drift on the shared dev database — see `MEMORY.md`).
 
 **What it is**: the `ApplyCredential` and `ApplyTask` Prisma models, plus
 `Application.applyUrl`, plus `backend/src/services/cryptoService.js`'s AES-256-GCM

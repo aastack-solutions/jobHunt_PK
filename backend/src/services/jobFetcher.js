@@ -129,6 +129,21 @@ function normalizeJob(m, platform, locationHint = null) {
   const applyUrl = (m.applyUrl || '').trim();
   if (!title || !company || !applyUrl) return null;
 
+  // Scheme validation — found 2026-08-21 (security review). applyUrl is
+  // rendered as a clickable link in the frontend (JobCard.jsx) with no scheme
+  // check of its own; a source returning `javascript:...` would currently only
+  // be stopped by the app's CSP (script-src 'self', no unsafe-inline), which is
+  // real but incidental defense-in-depth, not something this data layer should
+  // rely on. Rejecting anything but http(s) here — the same treatment as a
+  // missing applyUrl above — closes it at the source instead.
+  let applyUrlScheme;
+  try {
+    applyUrlScheme = new URL(applyUrl).protocol;
+  } catch {
+    return null;
+  }
+  if (applyUrlScheme !== 'http:' && applyUrlScheme !== 'https:') return null;
+
   const description = stripHtml(m.description);
 
   // remote-strict: general boards (Adzuna/Jooble) also return onsite jobs — keep

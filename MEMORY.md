@@ -42,7 +42,7 @@ touching what.
 | F7 | CAPTCHA / bot-challenge live-view | ✅ Done, verified (2 items narrower-scope) | Claude (session) | Verified 2026-08-19 against a real hCaptcha — full pause→live-view→resume cycle confirmed live, critical TASK_DEADLINE_MS pause-aware regression confirmed with real evidence, 1 real bug fixed (WS auth accepted-then-closed instead of never-accepted). Mouse/keyboard round-trip and email-verification not exercised against real occurrences — see TEST_PLAN.md |
 | F8 | Generic engine (non-ATS sources) | ✅ Done, verified | Claude (session) | F8a + F8b built and verified against real postings; `genericAdapter.js` implemented. F8c researched and deliberately closed — 3/16 aggregator postings reachable, and 2 of those 3 land on adapters we already have. `APPLY_BOT_GENERIC_ENABLED` stays false as a *conclusion*, not a gap |
 | F9 | Failure measurement & alerting | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon — all 4 test-plan items pass. Remaining half built (`jobs/applyBotFailureReport.js`); 1 real design bug found & fixed during verification (report skipped entirely when the kill switch was off). Item 2 verified at logic level only — frontend has no test tooling |
-| F10 | Testing & verification harness | ✅ Done, verified | Claude (session) | 78 passing / 0 skipped / 0 failing in 48s (43 total at start of 2026-08-19). Last blockers cleared: Playwright installed, callback test now starts its own server, and `applyBotSelect.js` went 16.98% -> 69.75% line / 100% branch. `npm run test:coverage` added |
+| F10 | Testing & verification harness | ✅ Done, verified | Claude (session) | 78 passing / 0 skipped / 0 failing in 48s (43 total at start of 2026-08-19). Last blockers cleared: Playwright installed, callback test now starts its own server, and `applyBotSelect.js` went 16.98% -> 69.75% line / 100% branch. Code-review fix 2026-08-20 — `applyBotSelect.test.js` hung ~60s instead of skipping when Redis was unreachable (the exact regression class this ticket exists to prevent), fixed with a bounded probe; carried forward mode-check + genericAdapter + unknownOutcome fixes from F2-F9 |
 | F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
 | F12 | Live-mode rollout & safety ops | 🟡 Unblocked, not started | Unassigned | F5/F6/F8/F9/F10 all done now — no build blockers left. What remains is F12 own checklist: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17), kill-switch drill, and the first real live-mode application |
 | F13 | Unified application tracking (source, resume link, ghosted) | ✅ Built, ⚠️ untested | — | Closes the pre-existing "Apply button doesn't track" gap too — see Decisions Log 2026-08-17 |
@@ -53,6 +53,71 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-20 — F10 code-review fix: its own new applyBotSelect.test.js hung ~60s instead of skipping when Redis was unreachable — the exact regression this ticket exists to prevent
+Branch: `f10-testing-harness`. Same "fix every bug, verify against the test plan"
+pass as F1-F9 (see those entries below). Fitting that this branch's own
+contribution needed the fix: F10's whole purpose was making the suite
+self-sufficient, and its own newest file was the one that broke that property.
+
+**Real bug found**: `applyBotSelect.test.js` requires `../jobs/applyBotSelect`,
+which transitively requires `../src/redis` (for the kill-switch check) and
+`../src/queues/applyBotQueue` (a BullMQ `Queue`) — both connect eagerly at
+require time. `src/redis.js`'s client retries an unreachable Redis
+INDEFINITELY by design (correct for the real production singleton: it should
+keep trying against a Redis that might come back up, not give up). This dev
+environment has had `DATABASE_URL` set but no reachable Redis for this entire
+session (see every earlier entry below noting the same constraint) — so this
+file's simple `hasDb` gate wasn't sufficient: it let the file past the skip
+check, requiring the Redis-connected modules, and the shared singleton's
+retry loop then made the whole FILE hang. Confirmed directly: ran it in
+isolation, watched it spam `"Redis error"` for exactly ~60 seconds before
+Node's own per-file timeout killed it and reported it as ONE failing test
+(the whole file, not an individual assertion — the hang happened before any
+`test()` callback even ran). Compared directly against
+`applyBotSweep.test.js`, which has no Redis/BullMQ dependency at all and
+still completes in ~16s — confirming this was specific to the new file's
+dependency chain, not a general property of this environment.
+
+**Fix**: added a bounded, non-retrying probe — a throwaway `redis` client with
+`connectTimeout: 2000` and `reconnectStrategy: false`, completely separate
+from the shared singleton — checked via a cached `ensureReady()` async
+function before `applyBotSelect.js`/`applyBotQueue` are ever required. If the
+probe fails, the file never touches the problematic modules at all, so the
+indefinite-retry singleton is never given a reason to start. Restructured all
+11 tests to accept `t` and call `withUser(t, ...)`, which does the check and
+calls `t.skip(...)` if unreachable — mirroring `applyTaskCallback.test.js`'s
+own already-established `ensureBackend()`/`t.skip()` pattern in this same
+directory, not inventing a new one. Re-verified: the file now skips all 11
+tests cleanly in well under 1 second (was 60+ seconds and a hard failure).
+
+**Also found and fixed, in the same pass**: `applyTaskCallback.test.js`'s
+seeded task used `mode: 'shadow'` while its own test sends a `'submitted'`
+callback — this only mattered once the F2 mode-check fix (carried forward
+onto this branch, see below) made a shadow-mode `'submitted'` callback
+correctly a no-op instead of creating an `Application`. Confirmed by running
+the test before the fixture fix (failed: `0 !== 1` Application rows) and
+after (3/3 pass) — same root cause and same fix as F2's own entry: the
+fixture needs `mode: 'live'` to actually exercise the Application-creation
+path the test is about.
+
+**Carried forward, all confirmed still present on this branch since it
+predates each fix**: F2/F7/F8/F9's `worker.js` mode-check fix, `internal.js`'s
+mode-check fix, `genericAdapter.js`'s `locateSubmit`/`fillByIndex` fixes
+(with matching new tests in `adapters.test.js`), and
+`applyBotFailureReport.js`'s `unknownOutcome` fix (with a matching new test).
+
+**Full verification**: apply-bot suite 38/38 pass. Backend suite: 81 tests,
+70 pass, 11 skip (all `applyBotSelect.test.js`, correctly — no Redis reachable
+in this environment), 0 fail, ~53s total (previously would not have completed
+in reasonable time at all).
+
+**Why**: the whole point of a self-sufficient test suite is that `npm test`
+tells you something true fast, in any environment, without a human having to
+know which external services happen to be running. A test file that hangs
+for a minute and then reports a confusing failure — instead of a clean,
+fast, honest skip — actively erodes trust in the rest of the suite, which is
+the opposite of what F10 was for.
 
 ### 2026-08-19 — F10 completed: the suite now runs itself, and the riskiest file in the feature finally has tests
 Branch: `f10-testing-harness` (off `f8-generic-engine`, since F8/F9 are not merged to

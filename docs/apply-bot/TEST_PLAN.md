@@ -467,6 +467,33 @@ running locally (branch `f9-failure-measurement`).
       (`--experimental-test-coverage`, no new dependency). See the F10 section of
       TECHNICAL_PLAN for the numbers and for what is deliberately still uncovered
 
+**2026-08-20 follow-up (code review fix)**: found and fixed a real regression in
+this branch's own new `applyBotSelect.test.js` — the exact class of problem this
+ticket exists to prevent. Requiring `../jobs/applyBotSelect` transitively requires
+`../src/redis` and `../src/queues/applyBotQueue`, both of which connect eagerly
+and, by design, retry an unreachable Redis INDEFINITELY (correct for the real
+production singleton — it should keep trying against a Redis that might come back
+up). In an environment with `DATABASE_URL` set but no reachable Redis (this
+project's actual dev environment throughout this whole session), that meant this
+one file didn't skip cleanly the way `applyBotSweep.test.js`/
+`applyTaskCallback.test.js` do — confirmed directly, running it in isolation hung
+for ~60s spamming "Redis error" before Node's own per-file timeout killed it as a
+failure, rather than skipping in under a second like every other DB-dependent
+file. Fixed with a bounded, non-retrying probe client (2s `connectTimeout`,
+`reconnectStrategy: false`) checked before `applyBotSelect.js`/`applyBotQueue` are
+ever required, so the indefinite-retry singleton never starts if Redis is
+genuinely unreachable. Re-verified: the file now skips all 11 tests cleanly in
+under 1 second (was 60+); full backend suite re-run clean: 81 tests, 70 pass, 11
+skip, 0 fail, ~53s (was hanging past this before). Also carried forward the
+established mode-check fixes (`worker.js`, `internal.js`), the `genericAdapter.js`
+fixes (`locateSubmit`, `fillByIndex`), and `applyBotFailureReport.js`'s
+`unknownOutcome` fix from earlier branches — this branch predates all of them.
+`applyTaskCallback.test.js`'s seeded task also needed its `mode` changed from
+`'shadow'` to `'live'` for the same reason as the identical F2 fix: the
+mode-check fix means a shadow-mode `'submitted'` callback correctly no longer
+creates an `Application`, which broke that test's own assertion until the fixture
+was corrected to match what it's actually meant to exercise.
+
 ## F11 — Credential & Session Management UX
 
 - [ ] 🖐️ A user can add a Greenhouse credential through the Settings UI with no API

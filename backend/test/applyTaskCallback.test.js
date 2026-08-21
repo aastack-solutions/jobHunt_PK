@@ -107,7 +107,15 @@ test('apply-bot callback idempotency', async (t) => {
         jobId: job.id,
         applyUrl: job.applyUrl,
         adapterUsed: 'greenhouse',
-        mode: 'shadow',
+        // Must be 'live', not 'shadow' — found 2026-08-20 (code review, carried
+        // forward from the identical F2 fix, see MEMORY.md): internal.js now
+        // requires task.mode === 'live' before a 'submitted' callback creates an
+        // Application (a shadow-mode task reporting 'submitted' should never
+        // happen and is now correctly a no-op with a logged warning instead). This
+        // test's whole point is exercising that Application-creation path, so the
+        // fixture needs to be a live-mode task, matching what a real submission
+        // scenario actually looks like.
+        mode: 'live',
         status: 'running',
         startedAt: new Date(),
       },

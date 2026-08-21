@@ -10,22 +10,68 @@
 // EVERY user in the database, which no test can safely do against a shared one.
 // Each test seeds its own throwaway user, so nothing here can touch real data.
 //
-// Requires DATABASE_URL — self-skips when absent, same as the other DB-dependent
-// files, so `npm test` still passes clean in a plain checkout.
+// Requires DATABASE_URL AND a reachable Redis — self-skips when either is absent,
+// same as the other DB-dependent files, so `npm test` still passes clean in a
+// plain checkout.
+//
+// Found 2026-08-20 (code review): requiring `../jobs/applyBotSelect` transitively
+// requires `../src/redis` (for the kill-switch check) and `../src/queues/
+// applyBotQueue` (a BullMQ Queue) — both connect eagerly at require time and, by
+// design, retry an unreachable Redis INDEFINITELY (correct for the real
+// production client, which should keep trying against a real Redis that might
+// come back up — see src/redis.js's own comment). In an environment with
+// DATABASE_URL set but no reachable Redis (this project's actual dev environment
+// throughout this whole session — see MEMORY.md), that meant this file didn't
+// skip cleanly the way applyBotSweep.test.js/applyTaskCallback.test.js do: the
+// shared singleton's retry loop made the whole FILE hang and eventually fail
+// after Node's default per-file timeout (~60s), spamming "Redis error" the whole
+// time — confirmed directly by running it in isolation. That's a real regression
+// in exactly what this ticket (F10, "make the suite self-sufficient") exists to
+// prevent. Fixed with a bounded, non-retrying PROBE client (2s connectTimeout,
+// reconnectStrategy: false) that never touches the shared singleton — only once
+// that probe succeeds does this file require applyBotSelect.js/applyBotQueue at
+// all, so the indefinite-retry singleton is never given a reason to start
+// retrying in the first place when Redis is genuinely unreachable.
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const hasDb = Boolean(process.env.DATABASE_URL);
-const skipReason = hasDb ? false : 'requires DATABASE_URL (live database) — not set';
 
 let prisma;
 let selectForUser;
 let applyBotQueue;
+let redisAvailable = null; // cached probe result, checked once
 
-if (hasDb) {
-  prisma = require('../src/db');
-  ({ selectForUser } = require('../jobs/applyBotSelect'));
-  applyBotQueue = require('../src/queues/applyBotQueue');
+async function probeRedis() {
+  const { createClient } = require('redis');
+  const probe = createClient({
+    url: process.env.REDIS_URL || 'redis://localhost:6379',
+    socket: { reconnectStrategy: false, connectTimeout: 2000 },
+  });
+  probe.on('error', () => {}); // throwaway probe — never the shared singleton
+  try {
+    await probe.connect();
+    await probe.quit();
+    return true;
+  } catch {
+    await probe.disconnect().catch(() => {});
+    return false;
+  }
+}
+
+// Call at the top of every test body (via withUser below). Returns false — the
+// test should then t.skip() — without ever requiring applyBotSelect.js/
+// applyBotQueue if Redis isn't reachable.
+async function ensureReady() {
+  if (!hasDb) return false;
+  if (redisAvailable === null) redisAvailable = await probeRedis();
+  if (!redisAvailable) return false;
+  if (!selectForUser) {
+    prisma = require('../src/db');
+    ({ selectForUser } = require('../jobs/applyBotSelect'));
+    applyBotQueue = require('../src/queues/applyBotQueue');
+  }
+  return true;
 }
 
 const uniq = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -101,7 +147,14 @@ async function cleanup(user, jobs) {
 }
 
 // Runs a test body with a seeded user, guaranteeing cleanup even on failure.
-async function withUser(fn) {
+// Checks ensureReady() first and calls t.skip() if either DATABASE_URL or Redis
+// isn't available, so every one of the 11 tests below gets this for free just by
+// passing `t` through.
+async function withUser(t, fn) {
+  if (!(await ensureReady())) {
+    t.skip('requires DATABASE_URL and a reachable Redis — not available');
+    return;
+  }
   const user = await makeUser();
   const jobs = [];
   try {
@@ -112,7 +165,11 @@ async function withUser(fn) {
 }
 
 after(async () => {
-  if (!hasDb) return;
+  // Only close what was actually opened — ensureReady() never got past the
+  // Redis probe (and therefore never required applyBotQueue/prisma) if Redis
+  // was unreachable, so calling .close() unconditionally would throw
+  // ReferenceError rather than the graceful no-op this needs to be.
+  if (!selectForUser) return;
   // The queue and Redis are opened by importing applyBotSelect; without closing
   // them the runner sits on live handles after the last assertion.
   await applyBotQueue.close().catch(() => {});
@@ -121,8 +178,8 @@ after(async () => {
   await prisma.$disconnect().catch(() => {});
 });
 
-test('the daily cap is an upper bound on tasks created in one run', { skip: skipReason }, async () => {
-  await withUser(async (user, jobs) => {
+test('the daily cap is an upper bound on tasks created in one run', async (t) => {
+  await withUser(t, async (user, jobs) => {
     await giveCredential(user);
     for (let i = 0; i < 5; i += 1) {
       const job = await makeJob();
@@ -137,8 +194,8 @@ test('the daily cap is an upper bound on tasks created in one run', { skip: skip
   });
 });
 
-test('a user who already hit the cap today gets nothing more', { skip: skipReason }, async () => {
-  await withUser(async (user, jobs) => {
+test('a user who already hit the cap today gets nothing more', async (t) => {
+  await withUser(t, async (user, jobs) => {
     await giveCredential(user);
     const job = await makeJob();
     jobs.push(job);
@@ -161,8 +218,8 @@ test('a user who already hit the cap today gets nothing more', { skip: skipReaso
   });
 });
 
-test('a job with an in-flight task is never selected again', { skip: skipReason }, async () => {
-  await withUser(async (user, jobs) => {
+test('a job with an in-flight task is never selected again', async (t) => {
+  await withUser(t, async (user, jobs) => {
     await giveCredential(user);
     const job = await makeJob();
     jobs.push(job);
@@ -178,8 +235,8 @@ test('a job with an in-flight task is never selected again', { skip: skipReason 
   });
 });
 
-test("an 'unknown_outcome' task blocks its job indefinitely, not just for the dedupe window", { skip: skipReason }, async () => {
-  await withUser(async (user, jobs) => {
+test("an 'unknown_outcome' task blocks its job indefinitely, not just for the dedupe window", async (t) => {
+  await withUser(t, async (user, jobs) => {
     await giveCredential(user);
     const job = await makeJob();
     jobs.push(job);
@@ -205,8 +262,8 @@ test("an 'unknown_outcome' task blocks its job indefinitely, not just for the de
   });
 });
 
-test('a company already applied to is skipped, even for a different job', { skip: skipReason }, async () => {
-  await withUser(async (user, jobs) => {
+test('a company already applied to is skipped, even for a different job', async (t) => {
+  await withUser(t, async (user, jobs) => {
     await giveCredential(user);
     const job = await makeJob({ company: `Dedupe Co ${uniq()}` });
     jobs.push(job);
@@ -228,8 +285,8 @@ test('a company already applied to is skipped, even for a different job', { skip
   });
 });
 
-test('a platform needing a credential is skipped when none is stored', { skip: skipReason }, async () => {
-  await withUser(async (user, jobs) => {
+test('a platform needing a credential is skipped when none is stored', async (t) => {
+  await withUser(t, async (user, jobs) => {
     const job = await makeJob(); // Greenhouse — requiresCredential() is true
     jobs.push(job);
     await makeMatch(user, job);
@@ -240,8 +297,8 @@ test('a platform needing a credential is skipped when none is stored', { skip: s
   });
 });
 
-test('an inactive credential counts as no credential', { skip: skipReason }, async () => {
-  await withUser(async (user, jobs) => {
+test('an inactive credential counts as no credential', async (t) => {
+  await withUser(t, async (user, jobs) => {
     const credential = await giveCredential(user);
     await prisma.applyCredential.update({ where: { id: credential.id }, data: { isActive: false } });
     const job = await makeJob();
@@ -254,8 +311,8 @@ test('an inactive credential counts as no credential', { skip: skipReason }, asy
   });
 });
 
-test('the F8 generic gate blocks non-ATS jobs while the flag is off, and lets them through when on', { skip: skipReason }, async () => {
-  await withUser(async (user, jobs) => {
+test('the F8 generic gate blocks non-ATS jobs while the flag is off, and lets them through when on', async (t) => {
+  await withUser(t, async (user, jobs) => {
     const job = await makeJob({ applyUrl: 'https://remotive.com/remote-jobs/some-select-test-job' });
     jobs.push(job);
     await makeMatch(user, job);
@@ -277,8 +334,8 @@ test('the F8 generic gate blocks non-ATS jobs while the flag is off, and lets th
   });
 });
 
-test('an employer-hosted Greenhouse job is stored with the F8a rewritten navigation URL', { skip: skipReason }, async () => {
-  await withUser(async (user, jobs) => {
+test('an employer-hosted Greenhouse job is stored with the F8a rewritten navigation URL', async (t) => {
+  await withUser(t, async (user, jobs) => {
     await giveCredential(user);
     const job = await makeJob({ applyUrl: 'https://www.coinbase.com/careers/positions/8054862?gh_jid=8054862' });
     jobs.push(job);
@@ -295,8 +352,8 @@ test('an employer-hosted Greenhouse job is stored with the F8a rewritten navigat
   });
 });
 
-test('a non-https applyUrl is refused outright', { skip: skipReason }, async () => {
-  await withUser(async (user, jobs) => {
+test('a non-https applyUrl is refused outright', async (t) => {
+  await withUser(t, async (user, jobs) => {
     await giveCredential(user);
     const job = await makeJob({ applyUrl: 'http://job-boards.greenhouse.io/selecttest/jobs/insecure' });
     jobs.push(job);
@@ -308,8 +365,8 @@ test('a non-https applyUrl is refused outright', { skip: skipReason }, async () 
   });
 });
 
-test('an inactive job is never selected', { skip: skipReason }, async () => {
-  await withUser(async (user, jobs) => {
+test('an inactive job is never selected', async (t) => {
+  await withUser(t, async (user, jobs) => {
     await giveCredential(user);
     const job = await makeJob({ isActive: false });
     jobs.push(job);

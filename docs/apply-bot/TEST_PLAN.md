@@ -12,6 +12,45 @@ these can't be automated away and shouldn't be skipped just because they're slow
 
 ---
 
+## Security Audit — 2026-08-21 (fixed on every F1-F12 branch)
+
+Cross-cutting, not tied to one feature — see MEMORY.md's 2026-08-21 Decisions
+Log entry for the full exploit chains and verification detail. Summarized here
+so it isn't missed when reading feature-by-feature.
+
+- [x] 🤖 **CRITICAL**: hostname-suffix spoofing in `applyBotPlatform.js` and
+      each ATS adapter's `matches()` (`.includes()` instead of exact/suffix
+      match) — a spoofed applyUrl like `boards.greenhouse.io.attacker.com`
+      would route to the real adapter and exfiltrate a real stored credential.
+      Fixed everywhere with exact-or-subdomain matching, plus a defense-in-
+      depth host re-check in `greenhouseAdapter.login()` itself.
+      `adapters.test.js`/`applyBotPlatform.test.js` cover the regression.
+- [x] 🤖 **MEDIUM**: selector injection in `ashbyAdapter.js`/
+      `genericAdapter.js`'s `locatorForField()` — unescaped `field.id`/
+      `field.name` could redirect a fill to an unrelated element. Proved with
+      a real headless Chromium page. Fixed with Node-safe attribute escaping.
+- [x] 🤖 **MEDIUM**: CSV formula injection in `GET /api/applications/export` —
+      a leading `=`/`+`/`-`/`@` in `notes`/`company`/`jobTitle` executes as a
+      formula when the export is opened in a spreadsheet app. Fixed by
+      defusing only values that actually start with a dangerous character.
+      `applicationsCsvExport.test.js` (F1: `applications.test.js`) covers it.
+- [x] 🤖 **LOW**: `auth.js` login timing side-channel (unknown-email logins
+      skipped `bcrypt.compare` entirely) — fixed by always comparing against
+      either the real hash or a fixed decoy hash of the same cost.
+- [x] 🤖 **LOW**: `auth.js` no session regeneration on login/register — fixed
+      with `req.session.regenerate()` before assigning `userId`.
+- [x] 🤖 **LOW**: `jobFetcher.js`'s `normalizeJob()` didn't validate
+      `applyUrl`'s scheme at all (confirmed a bare non-URL string was
+      previously accepted) — fixed to reject anything that isn't `http(s)`.
+      `auth.test.js` (self-skips without a reachable Redis/DB — see its own
+      header comment) and `jobFetcherApplyUrlScheme.test.js` cover these.
+
+Also corrected a misleading `schema.prisma` comment claiming
+`ApplyTask.fieldsFilled` has real redaction logic — it doesn't; currently safe
+only by construction, not by an actual filter.
+
+---
+
 ## F1 — Data Model & Credential Encryption
 
 **Verified 2026-08-18 against a real Neon Postgres instance — see MEMORY.md.**

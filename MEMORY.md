@@ -48,6 +48,14 @@ touching what.
 | F13 | Unified application tracking (source, resume link, ghosted) | ✅ Done, verified | Claude (session) | Closes the pre-existing "Apply button doesn't track" gap too — see Decisions Log 2026-08-17. 2026-08-21: code-review fix — `isGhosted()` had a real bug (measured from `updatedAt` instead of `appliedAt` for still-`'applied'` rows, so it never actually detected a freshly-ghosted application), fixed and tested for the first time (0 tests before). Migration confirmed applied cleanly against real Neon. Lives in F1's branch, not a separate F13 branch — see that entry's note |
 | F14 | Email-based application status auto-detection | 🔵 Researched + specified, not built | Claude (session) | User opted in to scoping this — needs a real Google Cloud OAuth app before any code can be tested. 2026-08-21: full bug-check pass over the scaffold found and fixed two real bugs despite nothing here executing yet (missing Prisma reverse relation; a `requireAuth`+`sameSite:strict` combo that would 401 every real OAuth callback) — see Decisions Log. Still not built, still needs the same OAuth-app sign-off before real implementation starts |
 
+**2026-08-21 — security audit, fixed on every branch (F1-F12)**: a
+CRITICAL hostname-suffix-spoofing vulnerability (real credential
+exfiltration), two selector-injection bugs, a CSV formula-injection
+vulnerability, and three low-severity findings — see the full Decisions
+Log entry for the complete writeup and exploit chains. This is
+orthogonal to each row's own build/verify status above (a feature
+being "done" didn't mean it was free of these).
+
 Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 not started · ⚠️ flag worth reading before touching
 
 ---
@@ -598,6 +606,128 @@ confirm they still load and the stub job still runs).
 **Why**: the user explicitly asked for a full bug-check on F14, not just a status
 read — and "fully check" was interpreted as it was for F1-F13: prove a bug exists
 before fixing it, even when the surrounding feature is intentionally unbuilt.
+
+### 2026-08-21 — Full security audit across all F1-F12 branches, six findings fixed everywhere
+
+The user asked to check every task/feature branch for vulnerabilities and fix
+them. Ran 4 parallel background code-review passes (credential/crypto/auth,
+adapter/generic-engine injection risks, API surface/IDOR/rate-limiting,
+frontend/live-view/reporting exposure) against the cumulative F11 codebase
+(the fullest branch), then propagated each confirmed fix to every branch that
+actually contained the vulnerable code — same mechanical pattern as the
+earlier mode-check bug. All fixes proved with a real reproduction before being
+applied (revert-and-confirm, or a real headless Chromium page for the DOM-
+selector findings), not just static reasoning.
+
+**CRITICAL — hostname-suffix spoofing → real credential exfiltration.**
+`applyBotPlatform.js`'s `PLATFORM_HOSTS` and each of
+`greenhouseAdapter.js`/`leverAdapter.js`/`ashbyAdapter.js`'s `matches()` used
+`hostname.includes('greenhouse.io')`-style checks. A hostname like
+`boards.greenhouse.io.attacker.com` contains the real domain as a substring
+and passed identically to the genuine one. Since `applyUrl` comes from ~13
+untrusted, partially scraped external job-fetch sources, a malicious listing
+with a spoofed `applyUrl` would: get classified as the real platform by
+`applyBotPlatform.js` → matched to the user's real stored `ApplyCredential`
+(this platform `requiresCredential`) and selected fully automatically → routed
+to the real adapter by `adapters/index.js` → navigated to by the real browser
+(not blocked by the SSRF guard, since the attacker's server has an ordinary
+public IP) → had the user's real, decrypted password typed into whatever the
+attacker's fake login form offered, via `greenhouseAdapter`'s unconditional
+`login()`. Confirmed with `new URL('https://boards.greenhouse.io.attacker.com/apply').hostname.includes('greenhouse.io')`
+→ `true`, identical to the real hostname's result. Fixed with exact-or-
+subdomain matching (`h === domain || h.endsWith('.' + domain)`) everywhere,
+plus defense-in-depth in `greenhouseAdapter.login()`: it now independently
+re-verifies `page.url()`'s hostname immediately before typing a credential, so
+a future `matches()` regression alone can't reopen this path. Fixed on all 12
+branches (F1-F12) — every branch had this pattern, since the four adapter
+files were all scaffolded together on F1.
+
+**MEDIUM — selector injection in `ashbyAdapter.js`/`genericAdapter.js`.**
+`locatorForField()`'s `field.id`/`field.name` (read straight off untrusted
+third-party DOM attributes) were interpolated unescaped into a quoted
+Playwright attribute selector (`` `[id="${field.id}"]` ``). Proved with a real
+headless Chromium page: a crafted `id` containing a `"` broke out of the
+quoted value and made the selector match a completely different element than
+the one the confidence scorer had actually scored — in the concrete
+reproduction, the unescaped code wrote the test user's email into an unrelated
+`#other-field` the scorer never touched. Fixed with Node-safe backslash/quote
+escaping (NOT the DOM's `CSS.escape()` — confirmed `CSS` is not a Node.js
+global; `locatorForField` runs in Node via `page.locator()`, unlike
+`fieldTaxonomy.js`'s own `CSS.escape()` usage inside a `page.evaluate()`
+browser callback, which is a genuinely different execution context). Fixed
+everywhere the pattern existed: `ashbyAdapter.js` (F6 onward) and
+`genericAdapter.js` (F8 onward).
+
+**MEDIUM — CSV formula injection in `GET /api/applications/export`.**
+`@json2csv/plainjs`'s default string formatter only quotes values; it never
+neutralizes a leading `=`, `+`, `-`, or `@`, which Excel/Sheets execute as a
+formula on open. `jobTitle`/`company` are copied from `Job` rows sourced from
+~13 external, only partially trusted fetch sources; `notes` is fully user-
+controlled — and since `Job` rows are shared, a malicious company name on one
+listing flows into every user's exported CSV who applies to it, not just the
+attacker's own. Fixed by wrapping the library's own string formatter with a
+prefix that defuses only values actually starting with a dangerous character,
+leaving quoting/escaping and every ordinary value unchanged. Proved with a
+real HTTP round-trip: created an application with `=1+1`/`+cmd|...`/`@SUM(...)`
+in title/company/notes, exported, confirmed the raw (unfixed) CSV contained
+those cells verbatim, confirmed the fix defuses them while keeping the
+original text visible. Fixed on all 12 branches — `applications.js` predates
+the whole apply-bot branch stack (Week 5), so it's identical everywhere except
+F1 (which already had the unrelated duplicate-guard fix from earlier the same
+day — the CSV fix was applied to F1's actual current content, and a smaller,
+dedicated `applicationsCsvExport.test.js` was used for F2-F12 rather than
+F1's full `applications.test.js`, since the duplicate-guard behavior it also
+covers doesn't exist on those branches).
+
+**LOW — three findings, all fixed on all 12 branches together:**
+1. `auth.js` login timing side-channel: an unknown-email login skipped
+   `bcrypt.compare` entirely and returned near-instantly, while a wrong-
+   password attempt against a real email paid the full compare cost —
+   letting an attacker distinguish "unknown email" from "known email, wrong
+   password" via timing despite both returning the identical 401 body.
+   Measured directly: the old shortcut path took 0ms, the real compare (both
+   against a genuine hash and a fixed decoy hash) took ~315ms. Fixed by always
+   comparing against either the real hash or a precomputed decoy hash of the
+   same bcrypt cost.
+2. `auth.js` session fixation: neither `/register` nor `/login` called
+   `req.session.regenerate()` before assigning `req.session.userId`. Real
+   exploitability is low (`sameSite: 'strict'` cookies close off the common
+   attack path) but cheap to fix correctly — wrapped in a promisified helper.
+3. `jobFetcher.js`'s `normalizeJob()` didn't validate `applyUrl`'s scheme at
+   all. Confirmed directly that the literal string `"not a url at all"` was
+   accepted and stored as a valid `applyUrl` before the fix. `applyUrl` is
+   rendered as a clickable link in the frontend with no scheme check of its
+   own; a `javascript:` URI is currently blocked only by the app's CSP
+   (`script-src 'self'`), which is real but incidental defense-in-depth. Now
+   rejects anything that isn't `http(s)` at the ingestion source.
+
+Also corrected a misleading `schema.prisma` comment: `ApplyTask.fieldsFilled`
+claimed "password-like fields redacted", but grepping the whole codebase found
+no redaction/filter logic anywhere — it's currently safe only because no
+adapter's `login()` return value is ever merged into `fieldsFilled`, not
+because of an actual safety net. Left as a landmine for whoever next extends
+`login()`/`fillApplication()`; corrected the comment to say so explicitly.
+
+**Not treated as a security finding, flagged for a future general bug pass**:
+a possible race in `internal.js`'s `/callback` handler (`findUnique` → status
+check → `update`, no DB-level lock) could theoretically let two near-
+simultaneous duplicate `'submitted'` callbacks both pass the
+`TERMINAL_STATUSES` guard and create two `Application` rows. Both callers
+would need the same `APPLY_BOT_SECRET`, so this isn't a trust-boundary
+violation — a data-integrity bug, not a vulnerability. Not fixed this pass.
+
+**Verification standard held throughout**: every CRITICAL/MEDIUM finding was
+proved with a real reproduction (a real headless Chromium page for the two
+selector-injection bugs, a real HTTP round-trip for the CSV injection, direct
+`.hostname.includes()` evaluation for the spoofing) before being fixed, and
+every fix was re-confirmed to close the exact reproduction. The full backend
++ apply-bot suites were run after every single branch's commit, not just once
+at the end. No new dependencies were added anywhere.
+
+**Why**: the user explicitly asked for a full vulnerability sweep across every
+branch, not just the one currently being worked on — matching the same
+per-branch discipline established earlier this session (fix on the branch
+that owns the code, propagate identically to every branch that shares it).
 
 ---
 

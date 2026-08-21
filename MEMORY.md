@@ -33,7 +33,7 @@ touching what.
 
 | # | Feature | Status | Owner | Notes |
 |---|---------|--------|-------|-------|
-| F1 | Data model & credential encryption | ✅ Done, verified | Claude (session) | Verified 2026-08-18 against real Neon Postgres — all 7 test-plan items pass; one real bug found & fixed (sessionStateIv/authTag not cleared on credential update). 2026-08-21: also fixed F13's `isGhosted()` bug and carried forward the F2 mode-check fix onto `internal.js` — both live in this branch since F13's scope was absorbed into F1's, see F13's row and the Decisions Log |
+| F1 | Data model & credential encryption | ✅ Done, verified | Claude (session) | Verified 2026-08-18 against real Neon Postgres — all 7 test-plan items pass; one real bug found & fixed (sessionStateIv/authTag not cleared on credential update). 2026-08-21: also fixed F13's `isGhosted()` bug and carried forward the F2 mode-check fix onto `internal.js` — both live in this branch since F13's scope was absorbed into F1's, see F13's row and the Decisions Log. 2026-08-21: closed the previously-flagged missing duplicate-application guard on `POST /api/applications` — see Decisions Log |
 | F2 | Backend orchestration API (claim/callback/select) | ✅ Built, ⚠️ untested | — | Timing-safe secret comparison, internal rate limiter, callback idempotency guard fixed 2026-08-17 |
 | F3 | apply-bot service scaffold & worker runtime | ✅ Built, ⚠️ untested | — | `npm install` / Playwright browser install never run; SSRF guard, task deadline, graceful shutdown, retry-safe backendApi added 2026-08-17 |
 | F4 | Lever adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | **Correction 2026-08-17**: no API shortcut exists (Lever's apply endpoint also needs an employer-owned key) — same posture as F5/F6, `leverAdapter.js` already built in Phase 1 |
@@ -498,6 +498,46 @@ real `.env`) as part of this fix.
 **Why**: the user asked to fix and verify F1 specifically — this is what "verify"
 actually required once a real shared database was involved, not just applying the
 one intended schema change in isolation.
+
+### 2026-08-21 — F1: closed the flagged duplicate-application guard
+
+The 2026-08-21 F1/F13 review (above) flagged but deliberately did not fix a gap:
+`applications.js`'s `POST /` had no server-side check against creating two
+`Application` rows for the same `jobId` — the frontend's disabled "Applied" button
+(`CoverLetterModal.jsx`'s `alreadyTracked`) is real but client-side only, not
+airtight against two open tabs, a rapid double-click racing the button's own
+disable, or a network retry. Left open at the time as a product-policy question
+(should re-applying to the same job *ever* be allowed again, e.g. a reposted role)
+rather than something to assume. The user has now explicitly asked for it to be
+fixed, which resolves that open question in favor of closing the accidental-
+duplicate case without deciding the "forever" policy question.
+
+**Fix**: inside `POST /`'s `if (jobId)` block, after loading the job, added
+`prisma.application.findFirst({ where: { userId, jobId } })` — if a row already
+exists, return it with `200` instead of creating a second one. Idempotent-return
+pattern (same philosophy as `internal.js`'s existing `TERMINAL_STATUSES` guard):
+a duplicate click is a harmless no-op from the caller's perspective, not an error.
+Scoped to `jobId` only — `jobId`-less manual entries (freehand job title/company)
+have no natural identity to dedupe on and are meant to allow several distinct rows,
+so they're untouched. Deliberately **not** a DB-level unique constraint — that
+would decide the "can you ever re-apply to this job" policy question unilaterally,
+which is still open.
+
+**Tests**: new `backend/test/applications.test.js`, mounting the real
+`applications.js` router on a throwaway HTTP server with a minimal fake-session
+middleware (`req.session = { userId }`), same pattern as
+`applyTaskCallback.test.js`. Two cases, both run against real Neon: (1) POSTing
+the same `jobId` twice → first is `201`, second is `200` with the *same* id, and
+exactly one row exists in the DB afterward; (2) POSTing without a `jobId` twice →
+both `201` with different ids (manual entries are never deduped). Confirmed test
+(1) actually catches the original bug by reverting the guard and re-running —
+got `201 !== 200` as expected, then restored the fix and reconfirmed both pass.
+Full backend suite re-run clean afterward: 52 tests, 45 pass, 7 skip, 0 fail.
+
+**Why**: the user explicitly asked for this specific flagged gap to be closed,
+rather than leaving it open indefinitely as a "someday" item — and the idempotent-
+return approach lets the fix land without also silently making the harder, still-
+unmade "can you ever re-apply" product decision.
 
 ---
 

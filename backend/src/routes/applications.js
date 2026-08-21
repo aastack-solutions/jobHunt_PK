@@ -98,6 +98,25 @@ router.post('/', requireAuth, async (req, res) => {
     company = job.company;
     locationType = job.locationType;
     applyUrl = job.applyUrl || null;
+
+    // Idempotent duplicate guard — found 2026-08-21 (code review): there was no
+    // server-side check here at all. The frontend's disabled "Applied" button
+    // state (CoverLetterModal.jsx's alreadyTracked) is a real guard but
+    // client-side only — not airtight against two open tabs, a rapid
+    // double-click racing the button's own disable, or a network retry. Scoped
+    // to jobId only (not to jobId-less manual entries, which have no natural
+    // identity to dedupe on and are meant to allow several distinct rows) and
+    // returns the EXISTING row with 200 rather than erroring, so a duplicate
+    // click is a harmless no-op from the caller's perspective, matching the
+    // same idempotency philosophy as internal.js's TERMINAL_STATUSES guard.
+    // Deliberately NOT a hard DB-level unique constraint: whether re-applying
+    // to the same job later (e.g. a reposted role) should ever be allowed is a
+    // product decision this fix doesn't make unilaterally — this only closes
+    // the accidental-duplicate-within-one-session case, not "forever."
+    const existing = await prisma.application.findFirst({
+      where: { userId: req.session.userId, jobId },
+    });
+    if (existing) return res.status(200).json(publicApp(existing));
   }
 
   if (!jobTitle || !company || !locationType) {

@@ -257,11 +257,11 @@ F5/F6, not an API-payload test.
       confirmed live against the real Neon instance: `npx prisma migrate status`
       reports up to date, and `information_schema.columns` directly confirms
       `applyUrl`/`resumeId`/`source` all exist on `Application`
-- [ ] 🖐️ Manual flow: clicking "Mark as Applied" in `CoverLetterModal` creates an
+- [x] 🖐️🤖 Manual flow: clicking "Mark as Applied" in `CoverLetterModal` creates an
       `Application` with `source: 'manual'`, `applyUrl` populated from the job, and
-      `resumeId` set to the currently-active resume — reviewed the code
-      (`applications.js`'s `POST /`) and it's correct by construction, not yet
-      exercised through a real browser
+      `resumeId` set to the currently-active resume — the API half is now verified
+      for real via HTTP against a real Neon database (`test/applications.test.js`);
+      the actual browser click itself is not yet exercised, only the endpoint it calls
 - [ ] 🖐️ Bot flow: a `submitted` `ApplyTask` creates an `Application` with
       `source: 'auto_apply_bot'`, and `ApplyTask.applicationId` correctly points
       back at it — reviewed `internal.js`'s callback handler, correct; also found

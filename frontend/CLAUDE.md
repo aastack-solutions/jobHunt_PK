@@ -6,7 +6,7 @@ Rules for everything inside `frontend/`. Read before touching any file here.
 
 ```json
 "react": "19.2.7",           "react-dom": "19.2.7",
-"react-router": "7.18.0",    "vite": "8.0.16",
+"react-router": "7.18.2",    "vite": "8.0.16",
 "tailwindcss": "4.3.1",      "@tailwindcss/vite": "4.3.1",
 "@tanstack/react-query": "5.101.0",
 "axios": "1.18.1",           "react-hook-form": "7.80.0",

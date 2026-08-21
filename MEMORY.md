@@ -58,6 +58,88 @@ being "done" didn't mean it was free of these).
 
 ## Decisions Log
 
+### 2026-08-22 — merged F1-F12 into master, ran the full project, fixed the frontend's real npm ci blocker + a react-router CVE
+
+**Merge**: `origin/master` already had F1-F11's *original* (pre-fix) code from
+earlier PRs (dated 2026-08-19, one day before this session's whole review pass
+started) — not a fast-forward target. Merged `f12-live-mode-rollout` (the
+cumulative tip containing every F1-F12 fix) first, then
+`f1-data-model-credential-encryption` separately, since F2-F12 branched off F1
+before F1's own post-fork work existed (duplicate-application guard, F13's
+`isGhosted()` fix, F14's scaffold bug fixes) — F12 alone didn't carry those.
+The second merge had 5 real conflicts (both branches independently touching
+`applyBotPlatform.js`, `internal.js`, `schema.prisma`, `TECHNICAL_PLAN.md`,
+and `MEMORY.md` itself) — all comment-level or genuinely-distinct-additions,
+resolved by hand rather than blindly picking one side. One real mistake
+mid-resolution, corrected immediately: a first attempt at reordering
+`MEMORY.md`'s two divergent Decisions Log blocks used `content.split('\n')`
+on a CRLF file, silently duplicating ~5000 lines before being caught by a
+sanity `wc -l`/`grep` check — recovered cleanly from git's own merge-stage
+blobs (`git show :2:`/`:3:`) rather than trying to hand-patch the corruption.
+Pushed to `origin/master` after full verification (Prisma valid, migrations
+up to date against real Neon, 93/93 relevant tests passing).
+
+**Ran the full project** (backend + frontend + resume-parser) to prove it
+actually works, not just that tests pass. Found and fixed one real
+environment gap along the way: `resume-parser`'s installed packages didn't
+match `requirements.txt` (`python-docx` missing entirely; `fastapi`/
+`uvicorn`/`pymupdf` stale) — `pip install -r requirements.txt` corrected it.
+
+**Important correction to an earlier claim in this same conversation**: I
+initially told the user that Redis being unreachable (a pre-existing, already-
+documented sandbox limitation) would hang *every* backend route, since
+session middleware sits in front of all of them. That was wrong, and the
+user's own browser screenshot caught it — `GET /api/auth/me` returned a fast,
+correct `401`, not a hang. Investigated properly: only routes that explicitly
+touch Redis themselves (`/health`'s `redisClient.ping()`) or that *write* a
+new session (`/register`, `/login` — `req.session.regenerate()`) actually
+hang; read-only session checks fail over gracefully and fast. Confirmed by
+attempting a real register call, which hung as predicted — and confirmed the
+`User` row still gets created in Postgres *before* the hung session-write
+step (matches `auth.js`'s literal statement order), leaving a real orphaned
+row. Found and deleted exactly one such orphan from this test. This means:
+reads work fine in this sandbox; login/register do not, and won't until
+there's a reachable Redis (works normally on Railway or with a real local
+Redis) — a narrower, more accurate statement than the original broad claim.
+
+**Frontend integration audit**: cross-checked every `frontend/src/api/*.js`
+call against its backend route file, and every response-shape field each
+page/component actually reads against what each route's `public*()` /
+response-builder function returns (`applications.js`↔`ApplicationRow.jsx`,
+`applyCredentials.js`↔`Settings.jsx`, `applyTasks.js`↔`AutoApply.jsx`/
+`ApplyTaskRow.jsx`, `dashboard.js`↔`Dashboard.jsx`/`SchedulerAlert.jsx`).
+Zero drift found anywhere — the 12-branch merge didn't break any frontend/
+backend contract. All 9 pages confirmed wired into `App.jsx`'s router.
+
+**Fixed two real issues, both with explicit user sign-off** (both are pinned-
+dependency changes `frontend/CLAUDE.md` requires sign-off for):
+1. The `npm ci` / Railway-build-blocker researched-but-unapplied twice
+   already (2026-08-19, 2026-08-20 — see the Open Questions entry, now
+   struck through). Bumped `@vitejs/plugin-react` 4.5.0 → 5.2.0 exactly as
+   already identified. `npm ci` now succeeds cleanly; `npm run build`
+   produces the same `../backend/public` output as before.
+2. **New finding, not previously known**: `npm audit` (run as a side effect
+   of the above `npm install`) surfaced a real HIGH-severity CVE
+   (GHSA-qwww-vcr4-c8h2, CSRF bypass allowing action execution before a 400
+   response) in `react-router@7.18.0` — the exact version this project pins.
+   Bumped to the patched `7.18.2` (patch-level, same minor). `npm audit fix`
+   (non-force) separately cleared two transitive vulnerabilities (`nanoid`,
+   `postcss`) with no pin changes needed. `npm audit` now reports 0
+   vulnerabilities. Frontend test suite (16/16) and a real production build
+   both re-confirmed clean after both bumps.
+
+**Why**: the user asked to "get me full project working with full
+potential" after the security-audit-and-merge work. Interpreted that as:
+verify the merge is actually sound (not just that it merged without
+conflicts left unresolved), prove the app runs, and fix what's genuinely
+broken — while still respecting the project's own "no pinned-version changes
+without instruction" rule by asking explicitly for the two dependency bumps
+rather than assuming a broad instruction covers them. Did not attempt
+anything requiring infrastructure access I don't have (Railway dashboard
+operations, a live-mode flip that would submit real applications to real
+employers, registering a Google Cloud OAuth app) — flagged those as genuinely
+blocked on the user's own action, not politely declined.
+
 ### 2026-08-21 — F1/F13 code-review fix: isGhosted() bug, plus a self-caught wrong-branch mistake worth recording in full
 Branch: `f1-data-model-credential-encryption`. This entry covers moving on to
 "F13" after the earlier 12-branch pass (F1-F12, see entries below) — and a real
@@ -1996,29 +2078,14 @@ first time someone actually fills in a TODO.
 
 ## Open Questions
 
-- **`npm ci` fails in `frontend/`, which means the Railway build cannot run.**
-  Found 2026-08-19 during F11. `@vitejs/plugin-react@4.5.0` declares
-  `peer vite@"^4.2.0 || ^5.0.0 || ^6.0.0"`, but the project pins `vite@8.0.16`, so
-  npm refuses to resolve. Railway's documented build command is
-  `cd frontend && npm ci && npm run build`, so this blocks deployment, not just local
-  work. Note `@vitejs/plugin-react` is **not** in `frontend/CLAUDE.md`'s pinned list,
-  while `vite` is — so the fix that respects every documented pin is to bump the
-  plugin to a version whose peer range includes vite 8, leaving vite itself alone.
-  Not done here: it is a dependency change outside F11's scope and wants explicit
-  sign-off. Local verification for F11 used `npm install --legacy-peer-deps`, which
-  changes nothing in the repo. **Unresolved.**
-  **2026-08-20 re-confirmed independently** during this session's F11 code-review
-  pass: `npm ci` in `frontend/` reproduces the exact same `ERESOLVE` error today.
-  Checked what a fix would look like without deciding to apply it (this is a
-  deploy-pipeline change, a different risk class than the code-logic bugs fixed
-  elsewhere this session, and it was already deliberately left for sign-off rather
-  than overlooked): `@vitejs/plugin-react@5.2.0`'s peer range is
-  `^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0` — includes vite 8, resolves
-  cleanly, and needs no other new peer packages. `6.x` also supports vite 8 but
-  additionally requires `oxc-transform-react`, `@rolldown/plugin-babel`, and
-  `babel-plugin-react-compiler` — new toolchain pieces, a bigger change than this
-  blocker calls for. **`5.2.0` is the minimal fix** if/when this gets signed off.
-  Still unresolved — not applied.
+- ~~`npm ci` fails in `frontend/`, which means the Railway build cannot run.~~
+  **Resolved 2026-08-22** — see that day's Decisions Log entry. Bumped
+  `@vitejs/plugin-react` to the already-identified minimal fix (`5.2.0`) with
+  explicit user sign-off; `npm ci` now succeeds cleanly and `npm run build`
+  produces the same output shape as before. Original research trail, kept for
+  context: found 2026-08-19 during F11 (`@vitejs/plugin-react@4.5.0`'s peer
+  range didn't include `vite@8.0.16`), re-confirmed 2026-08-20, fix identified
+  but deliberately left unapplied pending sign-off both times.
 - **What F8's definition of done actually is.** `TECHNICAL_PLAN.md` leaves it
   undefined on purpose, pending a scoping pass "once F4-F7 are done and real data
   exists on how often non-ATS `applyUrl`s actually resolve to something fillable at

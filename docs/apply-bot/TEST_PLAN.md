@@ -383,6 +383,24 @@ running locally (branch `f9-failure-measurement`).
       no-data-yet `null` vs. a real `0%`, the time window, the nullable
       `failureClass` bucket, and the persisted `SchedulerLog` row
 
+**2026-08-20 follow-up (code review fix)**: found and fixed a real accounting bug
+in `applyBotFailureReport.js`. `'unknown_outcome'` — a genuinely reachable status
+(set by `applyBotSweep.js` when the apply-bot process crashes mid-task) — was
+neither in-flight, `SUCCESS_STATUSES`, `'failed'`, nor `'skipped_low_confidence'`,
+so it silently counted toward `resolved` without ever appearing in
+`succeeded`/`failed`/`abstained`. That meant the report's own headline numbers
+didn't sum correctly: `succeeded + failed + abstained` could be LESS than
+`resolved`, with no visible line item explaining the gap. Confirmed with a concrete
+example before fixing: 4 `unknown_outcome` tasks mixed with 6 classified ones
+produced `resolved: 10` but `succeeded+failed+abstained` only summed to 6. Fixed
+by adding an explicit `unknownOutcome` field to both the per-adapter breakdown and
+the `totals` object, so all four categories now always sum to `resolved`. New
+permanent test added: `unknown_outcome tasks are tracked, not silently dropped
+from the resolved breakdown`, asserting the sum invariant directly. Re-ran the
+full backend suite twice (one run hit a transient Neon connection drop unrelated
+to this change — confirmed by an immediate clean re-run): 48 pass, 1 skip (no
+local backend server), 0 fail.
+
 ## F10 — Testing & Verification Harness
 
 - [x] 🤖 `npm test` exists and runs in under a minute — `node -r dotenv/config --test`

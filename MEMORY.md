@@ -41,7 +41,7 @@ touching what.
 | F6 | Ashby adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — 2 real bugs found & fixed (a genuine field-scan hydration-timing race, unlike F5's Greenhouse where none was needed; and a click-through-to-/application form flow); CAPTCHA not observed on any of the 5 (unlike F4/F5's 100%) |
 | F7 | CAPTCHA / bot-challenge live-view | ✅ Done, verified (2 items narrower-scope) | Claude (session) | Verified 2026-08-19 against a real hCaptcha — full pause→live-view→resume cycle confirmed live, critical TASK_DEADLINE_MS pause-aware regression confirmed with real evidence, 1 real bug fixed (WS auth accepted-then-closed instead of never-accepted). Mouse/keyboard round-trip and email-verification not exercised against real occurrences — see TEST_PLAN.md |
 | F8 | Generic engine (non-ATS sources) | 🔴 Not started, gated off | Unassigned | `APPLY_BOT_GENERIC_ENABLED=false` — don't enable until built |
-| F9 | Failure measurement & alerting | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon — all 4 test-plan items pass. Remaining half built (`jobs/applyBotFailureReport.js`); 1 real design bug found & fixed during verification (report skipped entirely when the kill switch was off). Item 2 verified at logic level only — frontend has no test tooling |
+| F9 | Failure measurement & alerting | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon — all 4 test-plan items pass. Remaining half built (`jobs/applyBotFailureReport.js`); 1 real design bug found & fixed during verification (report skipped entirely when the kill switch was off). Code-review fix 2026-08-20 — `unknown_outcome` tasks silently inflated `resolved` without appearing in succeeded/failed/abstained, so the report's own numbers didn't sum correctly; fixed with an explicit `unknownOutcome` bucket. Item 2 verified at logic level only — frontend has no test tooling |
 | F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 47 automated tests passing, 3 skipped (Playwright-only) as of 2026-08-19 — DB-dependent sweep/callback tests un-skipped during F2 verification, +5 added by F9; remaining items need a real Playwright install |
 | F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
 | F12 | Live-mode rollout & safety ops | 🔴 Blocked on F10 only | Unassigned | F5/F6/F9 now all done — F10's Playwright-dependent items are the last build blocker. Still also requires: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17) |
@@ -53,6 +53,61 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-20 — F9 code-review fix: unknown_outcome tasks silently vanished from the report's own succeeded/failed/abstained breakdown
+Branch: `f9-failure-measurement`. Same "fix every bug, verify against the test
+plan" pass as F1-F8 (see those entries below).
+
+**Real bug found**: `applyBotFailureReport.js`'s per-adapter breakdown bucketed
+every resolved `ApplyTask` into exactly one of `succeeded`/`failed`/`abstained`
+— except `'unknown_outcome'`, a real, reachable status (`applyBotSweep.js` sets
+it when the apply-bot process crashes mid-task, per F3's `maxStalledCount: 0`
+design). It wasn't in `IN_FLIGHT_STATUSES`, wasn't in `SUCCESS_STATUSES`, wasn't
+`'failed'`, wasn't `'skipped_low_confidence'` — so it silently added to
+`resolved` while never incrementing any of the three breakdown fields. Proved
+this with a concrete before-fixing example: 4 `unknown_outcome` tasks mixed with
+6 classified ones produced `resolved: 10` but `succeeded + failed + abstained`
+only summed to 6 — a reader of this report (whose entire purpose is "what's our
+per-adapter success rate") would see numbers that don't add up, with the missing
+4 nowhere explained.
+
+**Also worth recording — a possible-injection scare that turned out to be
+nothing**: while running a diagnostic script, dotenv's own startup banner printed
+`"⌁ auth for agents [www.vestauth.com]"` — a domain never seen in this session
+before, different from the usual dotenvx.com tip. Treated it as a real
+possibility of tampering rather than assuming it was fine: re-ran the same
+command (got a third, different tip), then `grep`ped `node_modules/dotenv/lib/
+main.js` directly and confirmed `vestauth.com` is one of several promotional tip
+strings hardcoded in the OFFICIAL dotenv package itself (v17.4.2, matching the
+pinned version), randomly rotated on each run — not a compromised dependency,
+not injected output. Recorded because the right response to "this looks
+suspicious" is exactly what happened here: verify directly against the source
+before either alarming the user or silently dismissing it — same principle as
+the F7 entry's "mid-session scare, resolved as a false alarm" below.
+
+**Fix**: added an explicit `unknownOutcome` field to both the per-adapter
+breakdown object and the `totals` object (reusing the existing generic
+`Object.keys(totals)` summation loop — no new logic needed there), so
+`succeeded + failed + abstained + unknownOutcome` now always equals `resolved`.
+Kept in `resolved` rather than moved to `inFlight`: an `unknown_outcome` task
+isn't actively being worked on by anything (it needs a HUMAN, not the
+pipeline), so folding it into "in flight" would have been its own kind of
+misleading.
+
+**Verified**: added a new permanent test asserting the sum invariant directly
+(`unknown_outcome tasks are tracked, not silently dropped from the resolved
+breakdown`), seeded with real `unknown_outcome` rows against real Neon. Also
+reviewed `dashboard.js`'s `applyBotNeedsReview` count (a simple `count()`, no
+similar accumulation logic) and `applyBotSelect.js`'s report-before-kill-switch
+ordering (still correct, matches this branch's own prior fix) — no further
+issues found in either. Full backend suite re-run twice (one run hit a
+transient Neon connection drop unrelated to this change, confirmed by an
+immediate clean re-run): 48 pass, 1 skip, 0 fail.
+
+**Why**: an observability tool that quietly loses a category is worse than one
+that has no data at all — the report's whole value is being a source of truth
+someone can trust without re-deriving the numbers by hand, and a silent gap
+defeats that even when every individual number shown is technically correct.
 
 ### 2026-08-19 — F9's remaining half built and verified against real Neon; 1 real design bug found and fixed during verification
 Branch: `f9-failure-measurement` (branched from `master` after F7 merged in).

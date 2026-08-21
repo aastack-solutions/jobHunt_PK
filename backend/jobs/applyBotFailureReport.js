@@ -65,6 +65,22 @@ async function runApplyBotFailureReport({ windowDays = DEFAULT_WINDOW_DAYS } = {
       succeeded: 0,
       failed: 0,
       abstained: 0,
+      // Found and fixed 2026-08-20 (code review): 'unknown_outcome' (a real,
+      // reachable status — set by applyBotSweep.js when the apply-bot process
+      // crashes mid-task) was neither in-flight nor SUCCESS_STATUSES nor 'failed'
+      // nor 'skipped_low_confidence', so it silently fell into `resolved` without
+      // ever being counted in succeeded/failed/abstained — meaning
+      // succeeded+failed+abstained no longer summed to resolved, and the report's
+      // own numbers were internally inconsistent with no visible explanation for
+      // the gap. Confirmed with a concrete example (4 unknown_outcome tasks mixed
+      // with 6 classified ones: resolved read 10, but succeeded+failed+abstained
+      // only summed to 6). Given its own explicit meaning — "we don't know if this
+      // already succeeded, a human must check" (see applyBotSelect.js's comment) —
+      // it's tracked here as its own explicit category, kept in `resolved` (a
+      // human-review backlog is still a real outcome the report should surface,
+      // not silently discarded), so succeeded+failed+abstained+unknownOutcome now
+      // always equals resolved.
+      unknownOutcome: 0,
       inFlight: 0,
       byStatus: {},
       successRate: null,
@@ -80,9 +96,10 @@ async function runApplyBotFailureReport({ windowDays = DEFAULT_WINDOW_DAYS } = {
     if (SUCCESS_STATUSES.includes(row.status)) adapter.succeeded += row._count;
     if (row.status === 'failed') adapter.failed += row._count;
     if (row.status === 'skipped_low_confidence') adapter.abstained += row._count;
+    if (row.status === 'unknown_outcome') adapter.unknownOutcome += row._count;
   }
 
-  const totals = { total: 0, resolved: 0, succeeded: 0, failed: 0, abstained: 0, inFlight: 0 };
+  const totals = { total: 0, resolved: 0, succeeded: 0, failed: 0, abstained: 0, unknownOutcome: 0, inFlight: 0 };
   for (const adapter of Object.values(perAdapterBreakdown)) {
     adapter.successRate = rate(adapter.succeeded, adapter.resolved);
     // §2 — abstain rate. High is not automatically bad (the safety rail doing its

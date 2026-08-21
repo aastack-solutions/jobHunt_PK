@@ -94,6 +94,41 @@ test('per-adapter success rate is computed from resolved tasks only', { skip: sk
   }
 });
 
+test('unknown_outcome tasks are tracked, not silently dropped from the resolved breakdown', { skip: skipReason }, async () => {
+  // Found and fixed 2026-08-20 (code review): 'unknown_outcome' (set for real by
+  // applyBotSweep.js when the apply-bot process crashes mid-task) used to count
+  // toward `resolved` without appearing in succeeded/failed/abstained anywhere —
+  // so those three no longer summed to `resolved`, and a reader had no way to see
+  // where the missing count went. This asserts the fixed invariant directly.
+  const startedAt = new Date();
+  const user = await makeUser();
+  const adapter = uniqueAdapter('unknown-outcome');
+  try {
+    await seedTasks(user.id, adapter, [
+      { status: 'submitted' },
+      { status: 'failed', failureClass: 'NETWORK' },
+      { status: 'unknown_outcome', failureReason: 'process crashed mid-task' },
+      { status: 'unknown_outcome', failureReason: 'process crashed mid-task' },
+    ]);
+
+    const report = await runApplyBotFailureReport();
+    const stats = report.perAdapterBreakdown[adapter];
+
+    assert.equal(stats.resolved, 4);
+    assert.equal(stats.succeeded, 1);
+    assert.equal(stats.failed, 1);
+    assert.equal(stats.abstained, 0);
+    assert.equal(stats.unknownOutcome, 2, 'unknown_outcome must be tracked as its own explicit category');
+    assert.equal(
+      stats.succeeded + stats.failed + stats.abstained + stats.unknownOutcome,
+      stats.resolved,
+      'every resolved task must be accounted for in exactly one of these four buckets'
+    );
+  } finally {
+    await cleanup(user.id, startedAt);
+  }
+});
+
 test('an adapter with only in-flight tasks reports null, not 0%', { skip: skipReason }, async () => {
   const startedAt = new Date();
   const user = await makeUser();

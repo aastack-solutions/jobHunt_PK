@@ -179,6 +179,10 @@ for (const j of jobs) await queue.removeRepeatableByKey(j.key);
 **Scheduled times (UTC, fixed):**
 - `exchange-rate-fetch` → 04:45 daily
 - `daily-job-fetch` → 05:00 daily
+- `apply-bot-select` → 05:15 daily (F12, wired 2026-08-21 — a few minutes after
+  daily-job-fetch so selection reads a fully up-to-date `JobMatch` table; also
+  runs the stale-task sweep and the failure report internally, see
+  `jobs/applyBotSelect.js`)
 - `interview-reminders` → 08:00 daily
 - `weekly-cleanup` → 03:00 Sunday
 

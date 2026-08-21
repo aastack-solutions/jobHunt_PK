@@ -44,10 +44,12 @@ router.post('/trigger-fetch', requireCronSecret, async (req, res) => {
   return res.json({ ok: true, ...result });
 });
 
-// Phase 1: manual trigger only — not yet wired into the daily scheduler.
+// F12 (2026-08-21): also runs on its own schedule now, 05:15 UTC daily, via
+// schedulerWorker.js's repeatable 'apply-bot-select' job. This endpoint stays —
+// useful for testing/forcing a run without waiting for the scheduled time.
 // runApplyBotSelection() already runs the stale-task sweep internally (see
-// applyBotSelect.js) — this endpoint runs selection AND the sweep together, as it
-// will once scheduled.
+// applyBotSelect.js) — this endpoint runs selection AND the sweep together, same
+// as the scheduled job does.
 router.post('/apply-bot/trigger-select', requireCronSecret, async (req, res) => {
   logger.info('internal: apply-bot trigger-select invoked');
   const result = await runApplyBotSelection();

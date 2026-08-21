@@ -49,9 +49,28 @@ function clearPausedSession(applyTaskId) {
 // real 3-minute wait be replaced with seconds when testing this specific mechanism
 // (see docs/apply-bot/TEST_PLAN.md F3) without touching production behavior —
 // unset in every real deployment, where this is always exactly 3 minutes.
-const TASK_DEADLINE_MS = process.env.TASK_DEADLINE_MS_OVERRIDE
-  ? parseInt(process.env.TASK_DEADLINE_MS_OVERRIDE, 10)
-  : 3 * 60 * 1000;
+// Validated rather than trusted outright: an unparseable or non-positive value
+// (typo, empty string surviving a Railway var-template substitution, etc.) would
+// otherwise silently become NaN — setTimeout(fn, NaN) fires on (almost) the very
+// next tick, which in production would force-fail every real task within
+// milliseconds of starting instead of after the intended 3 minutes.
+const DEFAULT_TASK_DEADLINE_MS = 3 * 60 * 1000;
+function resolveTaskDeadlineMs() {
+  const raw = process.env.TASK_DEADLINE_MS_OVERRIDE;
+  if (!raw) return DEFAULT_TASK_DEADLINE_MS;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    logger.error(
+      `worker: TASK_DEADLINE_MS_OVERRIDE="${raw}" is not a positive integer — ignoring and using the default ${DEFAULT_TASK_DEADLINE_MS}ms`
+    );
+    return DEFAULT_TASK_DEADLINE_MS;
+  }
+  logger.warn(
+    `worker: TASK_DEADLINE_MS_OVERRIDE active — task deadline is ${parsed}ms instead of the production default ${DEFAULT_TASK_DEADLINE_MS}ms. This must be unset in real deployments.`
+  );
+  return parsed;
+}
+const TASK_DEADLINE_MS = resolveTaskDeadlineMs();
 
 async function downloadResumeBuffer(url) {
   if (!url) return null;
@@ -207,20 +226,45 @@ async function runTask(applyTaskId, ctx) {
   }
 }
 
+// The race itself, extracted as a pure function of (workFn, deadlineMs, onDeadline)
+// so it can be unit-tested without Playwright/BullMQ/a real network at all — see
+// test/workerDeadline.test.js. This was pulled out specifically because the F3
+// review flagged the only existing verification of this mechanism as a manual test
+// against a nip.io hostname resolving to 203.0.113.1 (a TEST-NET address) — which is
+// ALSO in ssrfGuard.js's own IPV4_BLOCKED_RANGES blocklist, so that "hang" could
+// just as easily have been the SSRF guard's fast abort racing the deadline timer,
+// not a genuine indefinite hang. Testing the race directly, with a workFn that
+// simply never resolves, removes that ambiguity entirely.
+async function raceWithDeadline(workFn, deadlineMs, onDeadline) {
+  let deadlineTimer;
+  let firedDeadline = false;
+  const deadline = new Promise((resolve) => {
+    deadlineTimer = setTimeout(async () => {
+      firedDeadline = true;
+      await onDeadline().catch(() => {});
+      resolve();
+    }, deadlineMs);
+  });
+  await Promise.race([workFn(), deadline]);
+  clearTimeout(deadlineTimer);
+  return firedDeadline;
+}
+
 // Wraps runTask() with the TASK_DEADLINE_MS ceiling described above. If runTask
 // finishes first, the deadline timer is cleared and this is a no-op wrapper. If the
 // deadline fires first, it force-closes whatever browser session runTask currently
 // has open (via the shared `ctx`) and reports a TIMEOUT failure — freeing the
 // concurrency:1 queue to move on. Note: in the rare case both fire close together,
-// the task's final status may be written twice (harmless — same row, last write
-// wins); not worth the extra complexity of a stricter mutex for how rarely the
-// deadline should actually trigger.
+// the task's final status may be written twice (harmless — internal.js's
+// TERMINAL_STATUSES guard means whichever report lands first wins and the second is
+// ignored; either way the row ends up correctly terminal); not worth the extra
+// complexity of a stricter mutex for how rarely the deadline should actually trigger.
 async function processTask(applyTaskId) {
   const ctx = { session: null };
-  let deadlineTimer;
-
-  const deadline = new Promise((resolve) => {
-    deadlineTimer = setTimeout(async () => {
+  await raceWithDeadline(
+    () => runTask(applyTaskId, ctx),
+    TASK_DEADLINE_MS,
+    async () => {
       // TODO(F7 — REQUIRED, see docs/apply-bot/TECHNICAL_PLAN.md's "Reliability
       // Hardening" §7): this must NOT fire while the task is legitimately paused
       // for a human (getPausedSession(applyTaskId) is set) — check that here and
@@ -228,18 +272,12 @@ async function processTask(applyTaskId) {
       // a session a human may currently be looking at through the live view.
       logger.error(`worker: task ${applyTaskId} exceeded ${TASK_DEADLINE_MS}ms deadline — forcing close`);
       if (ctx.session) await closeSession(ctx.session).catch(() => {});
-      await backendApi
-        .reportResult(applyTaskId, {
-          status: 'failed', failureClass: 'TIMEOUT',
-          failureReason: `Task exceeded the ${TASK_DEADLINE_MS}ms overall deadline (likely a hung page or network call).`,
-        })
-        .catch(() => {});
-      resolve();
-    }, TASK_DEADLINE_MS);
-  });
-
-  await Promise.race([runTask(applyTaskId, ctx), deadline]);
-  clearTimeout(deadlineTimer);
+      await backendApi.reportResult(applyTaskId, {
+        status: 'failed', failureClass: 'TIMEOUT',
+        failureReason: `Task exceeded the ${TASK_DEADLINE_MS}ms overall deadline (likely a hung page or network call).`,
+      }).catch(() => {});
+    }
+  );
 }
 
 function createApplyBotWorker() {
@@ -269,4 +307,7 @@ function createApplyBotWorker() {
   return worker;
 }
 
-module.exports = { createApplyBotWorker, getPausedSession, registerPausedSession, clearPausedSession };
+module.exports = {
+  createApplyBotWorker, getPausedSession, registerPausedSession, clearPausedSession,
+  raceWithDeadline, // exported for test/workerDeadline.test.js only
+};

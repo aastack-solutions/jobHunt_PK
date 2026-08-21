@@ -69,11 +69,25 @@ these can't be automated away and shouldn't be skipped just because they're slow
 
 ## F3 — apply-bot Service Scaffold & Worker Runtime
 
-**Verified 2026-08-19 (local Windows dev, no Docker) — see MEMORY.md.** Two items
+**Verified 2026-08-19 (local Windows dev, no Docker) — see MEMORY.md. Follow-up
+code-review fix + re-verification 2026-08-20, also see MEMORY.md.** Two items
 are genuine environment blockers, not skipped carelessly: no Docker on this machine,
 and Windows doesn't reliably deliver `SIGTERM`/`SIGINT` between unrelated processes
 (two independent delivery attempts both silently killed the target instead of
 invoking its handler) — both need the real Railway Linux deployment to test for real.
+
+**2026-08-20 follow-up (code review fix)**: found and fixed a real bug —
+`TASK_DEADLINE_MS_OVERRIDE` had no NaN/range validation (see below). Also found
+that the prior TIMEOUT-deadline verification rested on a URL the SSRF guard's own
+blocklist also covers, so it may not have tested a genuine hang; replaced with a
+permanent, network-free unit test (`test/workerDeadline.test.js`). This session
+also actually installed Playwright + Chromium (`npm install` + `npx playwright
+install chromium`, both previously blocked/skipped in other sessions for
+environment reasons) and re-ran the full suite for real: **28/28 tests pass**,
+including the two that had only ever run against real Chromium before
+(`captchaDetector.test.js`, `fieldTaxonomy.test.js`) and a fresh smoke test
+confirming the SSRF guard still allows a real navigation to
+`boards.greenhouse.io` (page title fetched successfully).
 
 - [ ] 🖐️ **BLOCKED — no Docker installed on this machine.** `docker build` succeeds
       for `backend/apply-bot/` — not attempted; Dockerfile reviewed and matches the
@@ -98,14 +112,28 @@ invoking its handler) — both need the real Railway Linux deployment to test fo
       registers both signals against the same `shutdown()` function, which correctly
       awaits `worker.close()` (a BullMQ-library-guaranteed wait-for-current-job) before
       `process.exit(0)`. Needs re-verification on the actual Railway (Linux) deploy.
-- [x] 🖐️ A deliberately-hung task (e.g. point at a URL that never resolves) gets
+- [x] 🖐️🤖 A deliberately-hung task (e.g. point at a URL that never resolves) gets
       force-failed with `failureClass: 'TIMEOUT'` at `TASK_DEADLINE_MS`, and the
-      next queued task picks up normally afterward (queue isn't stuck) — tested with
-      a real network hang (a `*.greenhouse.io` hostname via nip.io wildcard DNS
-      resolving to a public TEST-NET blackhole address, no local system changes
-      needed) and a temporarily-shortened deadline (`TASK_DEADLINE_MS_OVERRIDE`, new
-      dev-only env var, unset in every real deployment): force-failed at the deadline,
-      next task started 4s later — confirmed not stuck
+      next queued task picks up normally afterward (queue isn't stuck).
+      **2026-08-20 correction**: the original manual verification here used a
+      `*.greenhouse.io` hostname via nip.io wildcard DNS resolving to
+      `203.0.113.1` — but `203.0.113.0/24` (TEST-NET-3) is *also* in
+      `ssrfGuard.js`'s own `IPV4_BLOCKED_RANGES` blocklist, so that request would
+      actually be aborted by the SSRF guard's own DNS check (bounded to ~3s), not
+      genuinely hang — whether it happened to land on `TIMEOUT` vs `SSRF_BLOCKED`
+      depended on how the shortened `TASK_DEADLINE_MS_OVERRIDE` compared to that
+      3s window, not on the deadline mechanism actually being exercised against a
+      real hang. Replaced with a real, permanent, non-network unit test instead:
+      `test/workerDeadline.test.js` exercises the extracted `raceWithDeadline()`
+      helper directly against a `workFn` that never resolves — no browser, no
+      network, no SSRF guard involved, so there's no ambiguity about what's being
+      tested. Run for real in this session (`npm install` completed — see
+      MEMORY.md): 3/3 pass. Also fixed a real bug found while extracting this:
+      `TASK_DEADLINE_MS_OVERRIDE` had no NaN/range validation — an unparseable or
+      non-positive value would silently become `setTimeout(fn, NaN)`, which fires
+      almost immediately, force-failing every real task within milliseconds
+      instead of after 3 minutes; now falls back to the 3-minute default with a
+      logged error, and logs a warning whenever a valid override is active.
 - [x] 🤖 **SSRF regression**: `isBlockedIp()` against the 18 known addresses (AWS/GCP
       metadata `169.254.169.254`, loopback, RFC1918 boundaries incl. `172.16.0.0`/
       `172.31.255.255`/`172.32.0.0`, CGNAT, public IPv4/IPv6, the IPv4-mapped-IPv6

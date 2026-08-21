@@ -35,7 +35,7 @@ touching what.
 |---|---------|--------|-------|-------|
 | F1 | Data model & credential encryption | ✅ Done, verified | Claude (session) | Verified 2026-08-18 against real Neon Postgres — all 7 test-plan items pass; one real bug found & fixed (sessionStateIv/authTag not cleared on credential update) |
 | F2 | Backend orchestration API (claim/callback/select) | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon+Upstash — all 10 test-plan items pass; found & fixed a real bug (bullConnection.js dropped TLS for rediss:// — hung every BullMQ queue, not just this one) |
-| F3 | apply-bot service scaffold & worker runtime | ✅ Done, verified (2 items env-blocked) | Claude (session) | Verified 2026-08-19 locally (no Docker) — full worker pipeline, TIMEOUT deadline, maxStalledCount:0 all confirmed live; docker build (no Docker) and real SIGTERM delivery (Windows limitation) need the actual Railway deploy |
+| F3 | apply-bot service scaffold & worker runtime | ✅ Done, verified (2 items env-blocked) | Claude (session) | Verified 2026-08-19 locally (no Docker); code-review fix + full re-verification 2026-08-20 (Playwright+Chromium actually installed this session, 28/28 tests pass) — TASK_DEADLINE_MS_OVERRIDE NaN guard fixed, TIMEOUT deadline now covered by a real network-free unit test after the original test's SSRF-guard claim was found to be wrong; docker build (no Docker) and real SIGTERM delivery (Windows limitation) still need the actual Railway deploy |
 | F4 | Lever adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | **Correction 2026-08-17**: no API shortcut exists (Lever's apply endpoint also needs an employer-owned key) — same posture as F5/F6, `leverAdapter.js` already built in Phase 1 |
 | F5 | Greenhouse adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA is the expected common case, not an edge case; login-page detection now automatic |
 | F6 | Ashby adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA presence unconfirmed by research; login-page detection now automatic |
@@ -53,6 +53,68 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-20 — F3 code-review fix: TASK_DEADLINE_MS_OVERRIDE had no validation, and the TIMEOUT test's own SSRF-guard claim was wrong
+Branch: `f3-apply-bot-service-scaffold`. Part of the "fix every bug and verify
+against the test plan, one branch at a time" pass that already covered F1
+(see F1's 2026-08-18 entry below) and F2 (F2's 2026-08-19 entry below).
+
+**Real bug fixed**: `worker.js`'s `TASK_DEADLINE_MS_OVERRIDE` (added in the entry
+right below this one) was read with a bare `parseInt(...)` and no validation at
+all. An unparseable value (a typo, or an empty string surviving some future
+Railway var-template substitution) becomes `NaN`, and `setTimeout(fn, NaN)` fires
+on essentially the very next tick — in production, where this override is
+supposed to always be unset, a stray/malformed value would force-fail every real
+task within milliseconds of starting instead of after the intended 3 minutes.
+Fixed with a real `Number.isInteger(...) && parsed > 0` guard: an invalid value
+now logs an error and falls back to the safe 3-minute default; a valid override
+now logs a warning every time it's active, so a misconfiguration is visible in
+the logs rather than silent.
+
+**Correction to the claim below**: the entry immediately below this one says the
+`203.0.113.1` (TEST-NET-3) address used for the TIMEOUT verification "isn't
+rejected by our own SSRF guard, which is exactly what made it usable for this
+test." That's factually wrong — `ssrfGuard.js`'s `IPV4_BLOCKED_RANGES` explicitly
+includes `['203.0.113.0', 24]` (it's in the same "benchmarking/test-net" group as
+`198.51.100.0/24`, both blocked deliberately alongside the private ranges). So
+that test's "hang" could just as easily have been the SSRF guard's own DNS-lookup
+abort (bounded to ~3s) racing a short `TASK_DEADLINE_MS_OVERRIDE`, not a genuine
+indefinite network hang — the deadline mechanism's *specific* behavior (does it
+actually force-fail something that's truly stuck?) was never conclusively proven,
+even though a task did get force-failed and the queue did keep moving.
+
+**Fix**: extracted the deadline race itself out of `processTask()` into a pure,
+dependency-free `raceWithDeadline(workFn, deadlineMs, onDeadline)` function
+(no Playwright, no BullMQ, no network), and added a new permanent test file,
+`test/workerDeadline.test.js`, with three cases: deadline fires when `workFn`
+never resolves, deadline does NOT fire when `workFn` finishes first, and the
+race still resolves cleanly even if `onDeadline` itself throws. No ambiguity
+left about what's being tested.
+
+**Actually installed Playwright + Chromium in this session** (`npm install` in
+`backend/apply-bot/`, then `npx playwright install chromium`) — both had been
+skipped/blocked in prior sessions for environment reasons elsewhere in this
+project (no admin rights blocked Postgres/Memurai via winget; this was a plain
+`npm`/`npx` install under the user's own profile, which worked with no
+elevation needed). Re-ran the full apply-bot suite for real: **28/28 pass**,
+including `captchaDetector.test.js` and `fieldTaxonomy.test.js`, which had only
+ever run against a real Chromium in the *other* teammate's session before now,
+plus the 3 new `raceWithDeadline` tests. Also re-confirmed with a standalone
+script that the SSRF guard still allows a real navigation to
+`boards.greenhouse.io` (fetched the real page title) — no regression from
+either change above.
+
+**Not re-verified this session** (unchanged from the entry below, still
+genuinely env-blocked on this machine): `docker build` (no Docker installed),
+and real cross-process `SIGTERM` delivery (Windows limitation). Both still need
+the actual Railway (Linux) deploy.
+
+**Why**: the NaN guard is a real correctness bug worth fixing regardless of
+where it was found. The SSRF-guard correction matters because an inaccurate
+"verified" claim is worse than an honestly-labeled gap — it looks identical to a
+real pass until someone checks the actual blocklist, which is exactly the
+"verification claims don't match the actual code" pattern flagged across
+several of the other feature branches during the initial review.
 
 ### 2026-08-19 — F3 verified end-to-end on local Windows dev (no Docker); two items genuinely env-blocked
 Branch: `f3-apply-bot-service-scaffold` (branched from `master` after merging F2 in).

@@ -3,11 +3,32 @@
 const express = require('express');
 const { z } = require('zod');
 const { Parser } = require('@json2csv/plainjs');
+const { string: csvStringFormatter } = require('@json2csv/formatters');
 const prisma = require('../db');
 const requireAuth = require('../middleware/requireAuth');
 const { isGhosted } = require('../services/applicationHealth');
 
 const router = express.Router();
+
+// CSV formula-injection guard — found 2026-08-21 (security review). plainjs's
+// default string formatter only quotes values; it does not neutralize a value
+// starting with =, +, -, or @, which Excel/Sheets treat as the start of a
+// formula and execute on open. jobTitle/company are attacker-influenceable
+// (copied from Job rows sourced from ~13 external, only partially trusted
+// fetch sources — see jobFetcher.js), and notes is fully user-controlled, so a
+// crafted job listing or note could run a formula in whoever's spreadsheet app
+// opens the exported CSV — including a DIFFERENT user's export, since a
+// malicious company name on one shared Job row flows into every user's
+// Application who applies to it. Prefixing a single quote defuses this
+// (displayed literally, not executed) without visibly changing any value that
+// doesn't start with one of these characters. Wraps (not replaces) the
+// library's own default string formatter so quoting/escaping stays identical.
+const baseCsvStringFormatter = csvStringFormatter();
+function csvSafeStringFormatter(value) {
+  const str = String(value);
+  const defused = /^[=+\-@]/.test(str) ? `'${str}` : str;
+  return baseCsvStringFormatter(defused);
+}
 
 // Pipeline: Applied, Viewed, Phone Screen, Interview, Technical Test, Offer,
 // Rejected/Withdrawn (split into two terminal states on the client).
@@ -76,6 +97,7 @@ router.get('/export', requireAuth, async (req, res) => {
   });
   const parser = new Parser({
     fields: ['jobTitle', 'company', 'locationType', 'status', 'source', 'applyUrl', 'notes', 'appliedAt'],
+    formatters: { string: csvSafeStringFormatter },
   });
   const csv = parser.parse(apps.map(publicApp));
   res.header('Content-Type', 'text/csv');

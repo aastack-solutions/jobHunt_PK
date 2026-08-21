@@ -76,6 +76,10 @@ async function post(body) {
   });
 }
 
+async function get(path) {
+  return fetch(`${BASE_URL}${path}`);
+}
+
 test('POST /api/applications twice for the same jobId does not create a second Application', async (t) => {
   if (!(await ensureServer())) {
     t.skip('requires DATABASE_URL (a live database) — not set');
@@ -124,4 +128,38 @@ test('POST /api/applications without a jobId is never deduped (manual entries ca
   const firstBody = await first.json();
   const secondBody = await second.json();
   assert.notEqual(firstBody.id, secondBody.id);
+});
+
+test('GET /api/applications/export defuses CSV formula injection in notes/company (security fix 2026-08-21)', async (t) => {
+  if (!(await ensureServer())) {
+    t.skip('requires DATABASE_URL (a live database) — not set');
+    return;
+  }
+
+  // A leading =, +, -, or @ is interpreted by Excel/Sheets as the start of a
+  // formula. `notes` is fully user-controlled; `company`/`jobTitle` are copied
+  // from Job rows sourced from ~13 external, only partially trusted feeds — a
+  // realistic path for either to end up here.
+  const created = await post({
+    jobTitle: '=1+1',
+    company: '+cmd|\' /C calc\'!A1',
+    locationType: 'Remote',
+    notes: '@SUM(1,1)',
+  });
+  assert.equal(created.status, 201);
+
+  const exportRes = await get('/api/applications/export');
+  assert.equal(exportRes.status, 200);
+  const csv = await exportRes.text();
+
+  // The raw CSV text must never contain a cell whose content starts with one
+  // of the dangerous characters directly inside its quotes — it must be
+  // prefixed with a defusing character first.
+  assert.doesNotMatch(csv, /"=/, 'jobTitle cell must not start with ="');
+  assert.doesNotMatch(csv, /"\+/, 'company cell must not start with "+');
+  assert.doesNotMatch(csv, /"@/, 'notes cell must not start with "@');
+  // And the defused, prefixed value must still be present and recognizable.
+  assert.match(csv, /'=1\+1/, 'defused jobTitle must still carry the original text');
+  assert.match(csv, /'\+cmd/, 'defused company must still carry the original text');
+  assert.match(csv, /'@SUM/, 'defused notes must still carry the original text');
 });

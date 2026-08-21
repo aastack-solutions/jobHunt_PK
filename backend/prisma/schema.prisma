@@ -204,7 +204,17 @@ model ApplyTask {
   // deliberately excluded from applyBotSelect.js's auto-retry to avoid a duplicate
   // application; needs manual human resolution.
   failureClass      String?   // CAPTCHA | AUTH | TIMEOUT | PORTAL_LAYOUT | NETWORK | LOW_CONFIDENCE | SSRF_BLOCKED | UNKNOWN
-  fieldsFilled      Json?     // field name -> value actually typed; password-like fields redacted
+  // field name -> value actually typed. Corrected 2026-08-21 (security review):
+  // this comment previously said "password-like fields redacted", but no
+  // redaction/filter logic exists anywhere in the codebase — grepped for it and
+  // found none. Currently safe by construction instead: every adapter's login()
+  // return value ({ attempted: bool }) is never merged into fieldsFilled (only
+  // fillApplication()'s profile fields are), so a credential never structurally
+  // reaches this column today. That invariant is easy to break by accident if a
+  // future change extends login() or fillApplication() to also report
+  // credential-field status here — there is no actual safety net catching that,
+  // despite what the old comment implied. Add real redaction before doing so.
+  fieldsFilled      Json?
   confidenceScore   Int?      // generic adapter only
   failureReason     String?
   screenshotKeys    String[]  @default([]) // R2 object keys, one per meaningful step

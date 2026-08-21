@@ -33,7 +33,7 @@ touching what.
 
 | # | Feature | Status | Owner | Notes |
 |---|---------|--------|-------|-------|
-| F1 | Data model & credential encryption | ✅ Done, verified | Claude (session) | Verified 2026-08-18 against real Neon Postgres — all 7 test-plan items pass; one real bug found & fixed (sessionStateIv/authTag not cleared on credential update) |
+| F1 | Data model & credential encryption | ✅ Done, verified | Claude (session) | Verified 2026-08-18 against real Neon Postgres — all 7 test-plan items pass; one real bug found & fixed (sessionStateIv/authTag not cleared on credential update). 2026-08-21: also fixed F13's `isGhosted()` bug and carried forward the F2 mode-check fix onto `internal.js` — both live in this branch since F13's scope was absorbed into F1's, see F13's row and the Decisions Log |
 | F2 | Backend orchestration API (claim/callback/select) | ✅ Built, ⚠️ untested | — | Timing-safe secret comparison, internal rate limiter, callback idempotency guard fixed 2026-08-17 |
 | F3 | apply-bot service scaffold & worker runtime | ✅ Built, ⚠️ untested | — | `npm install` / Playwright browser install never run; SSRF guard, task deadline, graceful shutdown, retry-safe backendApi added 2026-08-17 |
 | F4 | Lever adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | **Correction 2026-08-17**: no API shortcut exists (Lever's apply endpoint also needs an employer-owned key) — same posture as F5/F6, `leverAdapter.js` already built in Phase 1 |
@@ -45,7 +45,7 @@ touching what.
 | F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 37 automated tests passing (`npm test`, Node's built-in runner, zero new deps) covering everything browser-free/DB-free; remaining items blocked on a live DB or real Playwright install |
 | F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
 | F12 | Live-mode rollout & safety ops | 🔴 Blocked on F5/F6/F9/F10 | Unassigned | Now also requires: scheduler actually wired, Railway grace period increased (see Decisions Log 2026-08-17) |
-| F13 | Unified application tracking (source, resume link, ghosted) | ✅ Built, ⚠️ untested | — | Closes the pre-existing "Apply button doesn't track" gap too — see Decisions Log 2026-08-17 |
+| F13 | Unified application tracking (source, resume link, ghosted) | ✅ Done, verified | Claude (session) | Closes the pre-existing "Apply button doesn't track" gap too — see Decisions Log 2026-08-17. 2026-08-21: code-review fix — `isGhosted()` had a real bug (measured from `updatedAt` instead of `appliedAt` for still-`'applied'` rows, so it never actually detected a freshly-ghosted application), fixed and tested for the first time (0 tests before). Migration confirmed applied cleanly against real Neon. Lives in F1's branch, not a separate F13 branch — see that entry's note |
 | F14 | Email-based application status auto-detection | 🔵 Researched + specified, not built | Unassigned | User opted in to scoping this — needs a real Google Cloud OAuth app before any code can be tested |
 
 Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 not started · ⚠️ flag worth reading before touching
@@ -53,6 +53,86 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-21 — F1/F13 code-review fix: isGhosted() bug, plus a self-caught wrong-branch mistake worth recording in full
+Branch: `f1-data-model-credential-encryption`. This entry covers moving on to
+"F13" after the earlier 12-branch pass (F1-F12, see entries below) — and a real
+process mistake caught and corrected mid-task, which matters more than the bug
+fix itself for anyone picking this file up later.
+
+**The mistake**: F13 has no dedicated branch on `origin` (only F1-F11 do — F13
+was built earlier, directly on `master`, back on 2026-08-17, before the
+teammate's whole F1-F11 branch-based rebuild existed). Asked to "move to F13,"
+the natural move was `git checkout -b f13-... master` — but the LOCAL `master`
+branch in this clone had never been fast-forwarded to `origin/master` (only
+`git fetch`ed, back when this session first discovered `origin/master` already
+had F1-F11 merged — see that entry below). Local `master` turned out to be a
+genuine ancestor of `origin/master` (confirmed via `git merge-base
+--is-ancestor`), 15 commits behind — meaning it was the OLD, pre-rebuild
+snapshot of the project (F4 still "Not started" in ITS OWN copy of this very
+file, F7 too), not a diverged fork. Built an entire "F13" branch on top of that
+stale base: reconciled a migration onto it, found and fixed a real bug in
+`isGhosted()`, wrote a test file — all before checking whether any of it was
+even necessary.
+
+**The catch**: mid-way through, checked whether `origin/master` already had
+F13's own files (`applicationHealth.js`, `dashboard.js`'s `ghostedCount`,
+`CoverLetterModal.jsx`'s "Mark as Applied") — it did, all of them, byte-for-byte
+present, because F13's scope had been absorbed into F1's branch from the start
+(`schema.prisma`'s own file-manifest comment already said as much: "F1:
+ApplyCredential, ApplyTask, Application.source/resumeId/applyUrl" — F13's
+fields, credited to F1). The entire "F13" branch built on stale master was
+redundant work sitting on the wrong foundation — none of its other 11 fixed
+branches' work was reachable from it, and it would have needed to be reconciled
+back in later anyway, the hard way.
+
+**The correction**: stashed the orphaned branch's work (not deleted — a
+mistake this session made itself is still worth keeping around rather than
+force-deleting, in case anything in it turns out useful later), switched to
+the REAL `f1-data-model-credential-encryption` branch (which already has this
+session's earlier fix commit on it — see the 2026-08-20 entry below), and
+re-applied the two genuinely valuable pieces there directly rather than trying
+to port a diff across an unrelated base: the `isGhosted()` fix and its test
+file. Confirmed F1's branch already has the correct migration (no gap there —
+that "gap" only existed because the orphaned branch was missing a migration
+file the real F1 branch has always had) and confirmed `internal.js`'s
+`task.mode` check gap (F2's bug shape) is ALSO present here, unfixed, since F1
+predates F2's fix — carried that forward too, same as every other
+branch this session touched.
+
+**What actually got fixed, now correctly on F1's branch**: `applicationHealth.js`'s
+`isGhosted()` measured "days of silence" from `updatedAt` for a still-`'applied'`
+row, but Prisma's `@updatedAt` always reflects the actual write time and ignores
+any explicitly-passed value, even on `create()` — confirmed directly against
+the real Neon database: an application created with `appliedAt` 15 days in the
+past still got `updatedAt` stamped as the current insert time. `isGhosted()`
+therefore always returned `false` for a fresh row regardless of how stale
+`appliedAt` was, directly contradicting this feature's own
+`TEST_PLAN.md` item. Fixed: a still-`'applied'` row now measures from
+`appliedAt`; a row that's progressed past `'applied'` at least once still uses
+`updatedAt`. This file had zero test coverage before — added
+`test/applicationHealth.test.js`, 6 pure-function tests (no DB dependency,
+since `isGhosted()` never touches one), confirmed to fail on the old code and
+pass on the fix. Also carried forward the F2 `task.mode === 'live'` check onto
+`internal.js`'s Application-creation branch here. Full backend suite re-run
+clean: 50 tests, 43 pass, 7 skip, 0 fail.
+
+**Also found, flagged, not fixed**: `applications.js`'s manual `POST /` has no
+server-side guard against creating two `Application` rows for the same
+`jobId` — the frontend's disabled-button state is real but client-side-only,
+not airtight against two open tabs or a network retry. Not fixed: the "right"
+policy (block re-applying to the same job forever vs. allow it for a reposted
+role later) is a product decision, not something to assume unilaterally.
+
+**Why this is worth a full entry, not just a quiet fix**: the mistake wasn't
+catastrophic (nothing was pushed, nothing was lost, the orphaned branch is
+still sitting there stashed) — but it's exactly the kind of error that
+compounds silently if not caught: "F13" would have looked done, on a branch
+that could never actually be merged into anything real without redoing the
+same reconciliation later, under more time pressure, with less context. The
+lesson for next time picking up a feature with no dedicated branch: check
+whether `origin/master` already has it before assuming `master` (local OR
+origin) is the right base at all.
 
 ### 2026-08-18 — F1 verified end-to-end against a real database; one real bug found and fixed
 Working the F1-F14 ticket list one at a time (user's explicit workflow: one ticket per

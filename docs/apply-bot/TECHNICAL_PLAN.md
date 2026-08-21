@@ -70,7 +70,9 @@ backend/
 │   ├── cryptoService.test.js             ✅[F10]
 │   ├── applyBotPlatform.test.js          ✅[F10]
 │   ├── applyTaskCallback.test.js         🏗️[F10] — skipped until a live DB exists
-│   └── applyBotSweep.test.js             🏗️[F10] — skipped until a live DB exists
+│   ├── applyBotSweep.test.js             🏗️[F10] — skipped until a live DB exists
+│   └── applicationHealth.test.js         ✅[F13] — added 2026-08-21 code-review pass;
+│                                               isGhosted() had no test coverage at all
 └── apply-bot/                            separate Railway service, see F3
     ├── package.json / Dockerfile / .env.example
     ├── src/

@@ -253,21 +253,59 @@ F5/F6, not an API-payload test.
 
 ## F13 — Unified Application Tracking
 
-- [ ] 🖐️ Migration applies cleanly (`source`, `resumeId` columns present)
+- [x] 🖐️ Migration applies cleanly (`source`, `resumeId` columns present) —
+      confirmed live against the real Neon instance: `npx prisma migrate status`
+      reports up to date, and `information_schema.columns` directly confirms
+      `applyUrl`/`resumeId`/`source` all exist on `Application`
 - [ ] 🖐️ Manual flow: clicking "Mark as Applied" in `CoverLetterModal` creates an
       `Application` with `source: 'manual'`, `applyUrl` populated from the job, and
-      `resumeId` set to the currently-active resume
+      `resumeId` set to the currently-active resume — reviewed the code
+      (`applications.js`'s `POST /`) and it's correct by construction, not yet
+      exercised through a real browser
 - [ ] 🖐️ Bot flow: a `submitted` `ApplyTask` creates an `Application` with
       `source: 'auto_apply_bot'`, and `ApplyTask.applicationId` correctly points
-      back at it
+      back at it — reviewed `internal.js`'s callback handler, correct; also found
+      and fixed the same `task.mode` check gap present across F2/F7/F8/F10/F11
+      (see the follow-up note below)
 - [ ] 🖐️ Re-opening the modal for an already-tracked job shows the disabled
       "Applied" state, not an active "Mark as Applied" button
-- [ ] 🤖 An application with `status: 'applied'` and `appliedAt` 15 days in the past
-      returns `isGhosted: true`; one from yesterday returns `false`
-- [ ] 🤖 `isGhosted` is `false` for `offer`/`rejected`/`withdrawn` regardless of age
-- [ ] 🖐️ CSV export includes the `source` and `applyUrl` columns
+- [x] 🤖 An application with `status: 'applied'` and `appliedAt` 15 days in the past
+      returns `isGhosted: true`; one from yesterday returns `false` — **found and
+      fixed a real bug here, see the follow-up note below**
+- [x] 🤖 `isGhosted` is `false` for `offer`/`rejected`/`withdrawn` regardless of age
+- [ ] 🖐️ CSV export includes the `source` and `applyUrl` columns — reviewed
+      `applications.js`'s CSV `Parser` field list, both present; not yet exercised
+      by actually downloading and opening a real export
 - [ ] 🖐️ Dashboard's `autoAppliedCount`/`ghostedCount` match the actual underlying
-      data
+      data — reviewed `dashboard.js`, both correct by construction (the latter
+      inherits the isGhosted fix below automatically since it calls the same
+      shared function); not yet exercised against real seeded data end to end
+
+**2026-08-21 follow-up (code review fix)**: found and fixed a real bug in
+`applicationHealth.js`'s `isGhosted()` — it measured "days of silence" from
+`updatedAt` for a still-`'applied'` row, but Prisma's `@updatedAt` is auto-managed
+and always reflects the actual write time, ignoring any explicitly-passed value,
+even on `create()`. Confirmed directly against the real database: creating an
+application with `appliedAt` set 15 days in the past still got `updatedAt`
+stamped as the current insert time — so `isGhosted()` always returned `false` for
+a freshly-created row no matter how stale `appliedAt` was, directly contradicting
+this feature's own definition (and the checklist item right above). Fixed: a
+still-`'applied'` row now measures from `appliedAt` (days since it was actually
+sent); a row that's progressed past `'applied'` at least once still measures from
+`updatedAt` (the last real state change). This file had zero test coverage
+before — added `test/applicationHealth.test.js`, 6 pure-function tests (no DB
+needed, since `isGhosted()` never touches one), confirmed to fail on the old code
+and pass on the fix. Also carried forward the established `task.mode === 'live'`
+check onto `internal.js`'s Application-creation branch (same bug shape as F2's
+fix, found present here too since this branch predates it).
+
+**Also found, flagged, not fixed**: `applications.js`'s `POST /` has no
+server-side guard against creating two `Application` rows for the same `jobId` —
+the frontend's disabled-button state (`alreadyTracked`) is a real but
+client-side-only guard, not airtight against two browser tabs or a network
+retry. Not fixed here since the "right" policy (block a second application to
+the same job forever, vs. allow re-applying to a reposted role later) is a
+product decision, not something to assume.
 
 ## F14 — Email-Based Status Auto-Detection
 

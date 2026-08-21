@@ -44,10 +44,12 @@ router.post('/trigger-fetch', requireCronSecret, async (req, res) => {
   return res.json({ ok: true, ...result });
 });
 
-// Phase 1: manual trigger only — not yet wired into the daily scheduler.
+// F12 (2026-08-21): also runs on its own schedule now, 05:15 UTC daily, via
+// schedulerWorker.js's repeatable 'apply-bot-select' job. This endpoint stays —
+// useful for testing/forcing a run without waiting for the scheduled time.
 // runApplyBotSelection() already runs the stale-task sweep internally (see
-// applyBotSelect.js) — this endpoint runs selection AND the sweep together, as it
-// will once scheduled.
+// applyBotSelect.js) — this endpoint runs selection AND the sweep together, same
+// as the scheduled job does.
 router.post('/apply-bot/trigger-select', requireCronSecret, async (req, res) => {
   logger.info('internal: apply-bot trigger-select invoked');
   const result = await runApplyBotSelection();
@@ -210,7 +212,19 @@ router.post('/apply-bot/tasks/:id/callback', requireApplyBotSecret, async (req, 
 
   // A real submission (live mode only) creates the Application record — the only
   // place the bot creates one; the existing manual POST /api/applications is untouched.
-  if (status === 'submitted' && task.job) {
+  //
+  // Explicit task.mode === 'live' check added 2026-08-20 (code review, same fix
+  // carried across F2/F7/F8/F10/F11 — see MEMORY.md): the comment above already
+  // said "live mode only" but the code never actually checked task.mode. Under
+  // the current worker.js, shadow mode never reports status: 'submitted' (only
+  // 'shadow_complete'), so this wasn't actively triggering — closed here too as
+  // defense-in-depth.
+  if (status === 'submitted' && task.mode !== 'live') {
+    logger.warn(
+      `internal: apply-bot task ${task.id} reported 'submitted' but mode is '${task.mode}', not 'live' — this should never happen; skipping Application creation`
+    );
+  }
+  if (status === 'submitted' && task.mode === 'live' && task.job) {
     // Whichever resume was active at submission time — re-queried here rather than
     // threaded through from claim time, since that's the more correct semantic
     // ("the resume active when this Application was created") and avoids plumbing

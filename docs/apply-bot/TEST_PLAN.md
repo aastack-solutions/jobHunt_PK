@@ -497,17 +497,90 @@ Chromium against the built frontend served by the backend — 9/9 checks passed.
       clamping for a pointer that left the canvas mid-drag, and a not-yet-laid-out
       canvas reporting zero width are all asserted
 
+**2026-08-20 follow-up (code review)**: carried forward all six previously-
+established fixes from F2/F7/F8/F9/F10 (`worker.js`/`internal.js` mode-checks,
+`genericAdapter.js`'s `locateSubmit`/`fillByIndex`, `applyBotFailureReport.js`'s
+`unknownOutcome`, `applyBotSelect.test.js`'s Redis-probe hang fix,
+`applyTaskCallback.test.js`'s fixture mode) — this branch predates all of them.
+Full verification: apply-bot suite 38/38 pass; frontend suite 16/16 pass;
+`npm run build` succeeds (2327 modules, matches this branch's own claim).
+
+**Flagged, not fixed — a narrow pause-reason staleness gap.**
+`ApplyBotLiveView.jsx`'s `onmessage` handler has a `'pause'` case that updates
+`reason`/`instructions` mid-session ("the reason can change mid-session... follow
+it rather than trusting the mount-time prop") — but `backend/apply-bot/src/
+liveView.js` never actually sends a `type: 'pause'` message; it only ever sends
+`'frame'` and `'resumed'` (confirmed by reading the file directly). Combined with
+two other facts — `AutoApply.jsx`'s `liveTask` state is a one-time snapshot never
+refreshed from the polled `tasks` list while the modal is open, and
+`ApplyBotLiveView`'s `useState(pauseReason)` only captures its prop at mount
+time, not on every re-render — a task that hits a CAPTCHA, gets resolved, then
+hits a DIFFERENT challenge type (e.g. an email-verification code) later in the
+SAME session would show stale "solve the CAPTCHA" instructions instead of the
+code-entry UI. Judged low-frequency in the CURRENT architecture: per `worker.js`,
+each challenge triggers its own independent `waitForHumanResolution()`
+pause/report/re-check cycle rather than a fluid in-place transition, so a second
+challenge very likely produces a fresh `paused_human` report the human would see
+via the task list (which F11's own `ACTIVE_STATUSES` fix correctly keeps polling)
+rather than a silent same-session change — but the WS-level "reason can change
+mid-session" mechanism this component's own comment describes doesn't actually
+work as written, and closing it properly would mean coordinating a real fix
+across three files/layers rather than a narrow bug fix. Recorded here rather than
+silently left, or "fixed" with an untested multi-file change under time pressure.
+
 ## F12 — Live-Mode Rollout & Safety Ops
 
-- [ ] 🖐️ **Kill-switch drill**: flip `apply_bot:enabled` off mid-run, confirm no new
-      tasks are created; flip back on, confirm selection resumes normally
-- [ ] 🖐️ The `apply-bot-select` repeatable job actually fires on its own schedule
-      without a manual trigger (and the sweep runs alongside it)
-- [ ] 🖐️ A real Railway redeploy of the apply-bot service mid-task does not lose or
-      duplicate a result — end-to-end proof that graceful shutdown + the increased
-      grace period actually work together, not just individually
-- [ ] 🖐️ Flipping `APPLY_BOT_MODE` to `live` for one adapter/user produces a real,
-      independently-verifiable application on the employer's/ATS's side
+**Per the plan's own framing, F12 is a checklist/gate, not a code feature — "not a
+code deliverable... done when the team has actually reviewed a week of live
+submissions."** Of its four items, only one has a genuinely code-buildable half;
+the other three (and the operational half of the one) are things only a human
+with real Railway/production access can actually do. **2026-08-21: built and
+verified the one code-buildable piece (the scheduler wiring below); did NOT
+attempt, and will not attempt without explicit separate authorization, anything
+that touches Railway configuration or flips `APPLY_BOT_MODE` to `live` — that's a
+real, irreversible action (submitting real job applications to real employers on
+the user's behalf) that only the user should trigger.**
+
+- [x] 🤖 **`apply-bot-select` is now registered as a real repeatable BullMQ job**
+      (`backend/src/workers/schedulerWorker.js`, 05:15 UTC daily — a few minutes
+      after `daily-job-fetch`, matching the original plan) instead of Phase 1's
+      manual-trigger-only state. `runApplyBotSelection()` already sweeps stale
+      tasks and runs the failure report internally, so this one registration
+      covers the sweep too, per the item below. The manual trigger endpoint
+      (`POST /api/internal/apply-bot/trigger-select`) is left in place for
+      testing/forcing a run without waiting for the scheduled time. Verified: the
+      cron pattern `15 5 * * *` (UTC) independently confirmed to resolve to
+      05:15:00 UTC on consecutive days via `cron-parser` directly (no live Redis
+      needed for this check); the added code is a structural match to the
+      already-working `daily-job-fetch`/`interview-reminders` registrations, same
+      shape, same file. Full backend suite re-run clean after the change: 81
+      tests, 70 pass, 11 skip, 0 fail.
+- [ ] 🖐️ **NOT verified — could not be, in this environment.** "The
+      `apply-bot-select` repeatable job actually fires on its own schedule
+      without a manual trigger" needs either waiting for 05:15 UTC against a
+      running server with a reachable Redis, or a real Railway deployment —
+      this dev environment has no reachable Redis at all (see every other
+      Redis-dependent finding this session) and isn't a running server. The
+      registration is wired and reviewed correct by construction; it has not
+      been observed to actually fire.
+- [ ] 🖐️ **Kill-switch drill — not performed.** The mechanism itself
+      (`apply_bot:enabled` in Redis, checked by `isEnabled()` in
+      `applyBotSelect.js`) was already built and code-reviewed in F2/F8's
+      passes, with no issues found — but "flip it off mid-run, confirm no new
+      tasks, flip back on, confirm resumption" is an action against live Redis
+      that needs to actually happen, not just be reasoned about.
+- [ ] 🖐️ **Railway grace period — not configured; can't be from here.** This is a
+      setting in Railway's own dashboard for the apply-bot service (SIGTERM→SIGKILL
+      grace period, needs to exceed `TASK_DEADLINE_MS`'s 3 minutes) — not a line
+      of code in this repo. Needs to be set when the service is actually deployed.
+- [ ] 🖐️ **A real Railway redeploy mid-task — not attempted.** Requires an actual
+      Railway deployment to redeploy against.
+- [ ] 🖐️ **Flipping `APPLY_BOT_MODE` to `live` — deliberately not attempted.**
+      This is the one action in this whole plan that submits a real application
+      to a real employer's ATS using the user's real credentials. Explicitly
+      out of scope for an autonomous pass; requires the user's own direct,
+      supervised action, after the other three items above are actually done —
+      not something to build toward silently.
 
 ## F13 — Unified Application Tracking
 

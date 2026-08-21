@@ -52,21 +52,52 @@ async function fillApplication(page, profile) {
   const fieldsFilled = {};
   const fields = await scanFields(page);
 
-  // Same mechanism the three ATS adapters use: fieldTaxonomy.scanFields returns
-  // entries in document order, so nth(index) on the identical combined selector
-  // lines back up with the scan. Deliberately reusing that pattern rather than
-  // inventing a second one -- see ashbyAdapter.fillApplication.
+  // Uses a stable id/name attribute selector rather than fieldTaxonomy.scanFields's
+  // positional index -- same fix as ashbyAdapter.js's locatorForField() (see
+  // MEMORY.md's F6/F8 entries): filling one field can mutate the DOM before a later
+  // field is filled, which silently shifts what nth(index) resolves to in the LIVE
+  // DOM versus what it pointed at when `fields` was scanned. On a form of genuinely
+  // unknown structure -- this adapter's entire premise -- that risk is at least as
+  // real as it was for Ashby, arguably more so since there's no hand-verified
+  // selector set to fall back to at all.
+  // field.id/field.name are read straight off untrusted, third-party page DOM
+  // attributes -- found and fixed 2026-08-21 (security review), same bug and same
+  // fix as ashbyAdapter.js's locatorForField(): interpolating them unescaped into
+  // this quoted attribute selector lets a crafted id/name value (containing a `"`
+  // that breaks out of the quoted value) redirect this locator to resolve against
+  // a different element than the one bestMatch() actually scored -- breaking the
+  // confidence-scoring's field-to-target guarantee this code otherwise relies on.
+  // Escaping backslash/quote is what a quoted CSS attribute-value string actually
+  // needs to stay a literal string -- NOT the DOM's CSS.escape() (CSS is not a
+  // Node.js global; this function runs in Node via page.locator(), not inside a
+  // page.evaluate() browser callback).
+  const escapeAttrValue = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const locatorForField = (field) => {
+    if (field.id) return page.locator(`[id="${escapeAttrValue(field.id)}"]`).first();
+    if (field.name) return page.locator(`[name="${escapeAttrValue(field.name)}"]`).first();
+    return page.locator('input, textarea, select').nth(field.index);
+  };
+
+  // Records a field as filled ONLY if the fill/upload actually succeeded (see
+  // MEMORY.md's F8 entry): the original swallowed fill()/setInputFiles() errors
+  // via .catch(() => {}) and then recorded fieldsFilled[key] = value
+  // unconditionally regardless, so a genuinely-failed fill (a disabled/readonly
+  // field, a stale/inactionable element) was reported identically to a real
+  // success -- directly undermining the abstain rule, this adapter's own comment
+  // calls it "the entire safety mechanism".
   const fillByIndex = async (key, value, isFile = false) => {
     if (!value) return false;
     const match = bestMatch(fields, key);
     if (!match) return false;
-    const locator = page.locator('input, textarea, select').nth(match.field.index);
-    if (isFile) {
-      await locator
-        .setInputFiles({ name: profile.resumeFileName || 'resume.pdf', mimeType: 'application/pdf', buffer: value })
-        .catch(() => {});
-    } else {
-      await locator.fill(String(value)).catch(() => {});
+    const locator = locatorForField(match.field);
+    try {
+      if (isFile) {
+        await locator.setInputFiles({ name: profile.resumeFileName || 'resume.pdf', mimeType: 'application/pdf', buffer: value });
+      } else {
+        await locator.fill(String(value));
+      }
+    } catch {
+      return false; // the fill genuinely failed -- do not report it as filled
     }
     fieldsFilled[key] = isFile ? profile.resumeFileName || 'resume.pdf' : value;
     return true;
@@ -125,13 +156,15 @@ const SUBMIT_PATTERNS = [
   /^apply( now| for this job)?$/i,
 ];
 
-function locateSubmit(page) {
-  // Returns the first pattern that actually matches something on the page rather
-  // than blindly returning pattern #1's locator, so a form using "Apply now" is not
-  // reported as having no submit button at all.
+// Async (see MEMORY.md's F8 entry): a Playwright Locator is ALWAYS truthy
+// regardless of match count, so a synchronous `if (candidate)` check never
+// actually verifies anything -- `.count()` must be awaited. worker.js's call
+// site awaits this (harmless for the other three adapters' synchronous
+// locateSubmit, since a plain Locator isn't thenable).
+async function locateSubmit(page) {
   for (const pattern of SUBMIT_PATTERNS) {
     const candidate = page.getByRole('button', { name: pattern }).first();
-    if (candidate) return candidate;
+    if ((await candidate.count()) > 0) return candidate;
   }
   return page.getByRole('button', { name: SUBMIT_PATTERNS[0] }).first();
 }

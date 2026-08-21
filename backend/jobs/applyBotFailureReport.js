@@ -65,6 +65,14 @@ async function runApplyBotFailureReport({ windowDays = DEFAULT_WINDOW_DAYS } = {
       succeeded: 0,
       failed: 0,
       abstained: 0,
+      // 'unknown_outcome' (a real, reachable status set by applyBotSweep.js when
+      // the apply-bot process crashes mid-task) was previously neither in-flight
+      // nor SUCCESS_STATUSES nor 'failed' nor 'skipped_low_confidence', so it
+      // silently inflated `resolved` without ever appearing in the breakdown —
+      // succeeded+failed+abstained no longer summed to resolved. Tracked here as
+      // its own explicit category (see MEMORY.md's F9 entry) so the four buckets
+      // always account for the full `resolved` count.
+      unknownOutcome: 0,
       inFlight: 0,
       byStatus: {},
       successRate: null,
@@ -80,9 +88,10 @@ async function runApplyBotFailureReport({ windowDays = DEFAULT_WINDOW_DAYS } = {
     if (SUCCESS_STATUSES.includes(row.status)) adapter.succeeded += row._count;
     if (row.status === 'failed') adapter.failed += row._count;
     if (row.status === 'skipped_low_confidence') adapter.abstained += row._count;
+    if (row.status === 'unknown_outcome') adapter.unknownOutcome += row._count;
   }
 
-  const totals = { total: 0, resolved: 0, succeeded: 0, failed: 0, abstained: 0, inFlight: 0 };
+  const totals = { total: 0, resolved: 0, succeeded: 0, failed: 0, abstained: 0, unknownOutcome: 0, inFlight: 0 };
   for (const adapter of Object.values(perAdapterBreakdown)) {
     adapter.successRate = rate(adapter.succeeded, adapter.resolved);
     // §2 — abstain rate. High is not automatically bad (the safety rail doing its

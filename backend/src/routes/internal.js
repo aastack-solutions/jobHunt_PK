@@ -198,7 +198,21 @@ router.post('/apply-bot/tasks/:id/callback', requireApplyBotSecret, async (req, 
 
   // A real submission (live mode only) creates the Application record — the only
   // place the bot creates one; the existing manual POST /api/applications is untouched.
-  if (status === 'submitted' && task.job) {
+  // Fixed 2026-08-20 (code review): this comment used to be aspirational, not
+  // enforced — the condition below never actually checked task.mode, so a
+  // shadow-mode task that ever reported 'submitted' (worker bug, adapter
+  // misclassification, a future status typo) would silently create a real
+  // Application and mark the job as actually applied-to, even though shadow mode
+  // is specifically designed to never submit anything. worker.js should never
+  // report 'submitted' for a shadow-mode task — if this branch is ever hit for
+  // one, that's a worker-side contract violation worth knowing about, not
+  // something to silently paper over by creating an Application anyway.
+  if (status === 'submitted' && task.mode !== 'live') {
+    logger.warn(
+      `internal: apply-bot task ${task.id} reported 'submitted' but mode is '${task.mode}', not 'live' — this should never happen; skipping Application creation`
+    );
+  }
+  if (status === 'submitted' && task.mode === 'live' && task.job) {
     // Whichever resume was active at submission time — re-queried here rather than
     // threaded through from claim time, since that's the more correct semantic
     // ("the resume active when this Application was created") and avoids plumbing

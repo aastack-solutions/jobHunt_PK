@@ -38,6 +38,33 @@ these can't be automated away and shouldn't be skipped just because they're slow
 
 **Verified 2026-08-19 against a real Neon Postgres + Upstash Redis — see MEMORY.md.**
 
+**2026-08-20 follow-up (code review fixes)**: the review found 3 real issues this
+original verification pass missed, all now fixed:
+1. **Critical**: `internal.js` created an `Application` for any `status:'submitted'`
+   callback regardless of `task.mode` — the code comment said "live mode only" but
+   nothing enforced it. A shadow-mode task reporting `submitted` (worker bug,
+   misclassification) would have silently created a real Application. Fixed —
+   gated on `task.mode === 'live'`, with a warning logged if a shadow-mode task
+   ever hits this branch (it shouldn't). New test added specifically for this case.
+2. `npm test` preloaded the real `.env` unconditionally, so having `DATABASE_URL`
+   configured for normal dev work was enough by itself to make the DB-integration
+   tests silently create/delete real rows on every run. Fixed — both DB test files
+   now require an explicit `RUN_DB_TESTS=true` opt-in, skip by default otherwise.
+3. `applyTaskCallback.test.js`'s fixture setup could leak a User row if it failed
+   partway through (outside the try/finally). Fixed — fixture is now a mutable
+   object populated incrementally, so cleanup can act on partial state too.
+
+**Re-verified in this environment** (no local Redis available — see `MEMORY.md`):
+`applyBotSweep.test.js`'s two tests ran for real against the live Neon DB with
+`RUN_DB_TESTS=true` and passed (confirmed a real stale `running` task actually swept
+to `unknown_outcome`). The HTTP-based `applyTaskCallback.test.js` (idempotency guard
++ the new shadow-mode fix) could **not** be re-run here — it needs a running backend
+instance, which needs Redis for sessions, which this environment doesn't have.
+Correctly skips with a clear reason rather than silently passing or failing. This is
+exactly the kind of gap the original 2026-08-19 pass (which apparently had working
+Redis via Upstash) wouldn't have hit — worth running this specific test for real
+once Redis is available, to close the loop on the mode-check fix.
+
 - [x] 🖐️ `POST /api/internal/apply-bot/trigger-select` with the correct
       `X-Cron-Secret` → 200, creates `ApplyTask` rows respecting `APPLY_BOT_DAILY_CAP`
       (verified both the normal case and cap=1 against 2 eligible jobs)

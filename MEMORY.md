@@ -419,6 +419,51 @@ correctly skipped (Playwright/live-DB-dependent), 0 failing.
 have caught these two bugs now than have them surface as confusing failures the
 first time someone actually fills in a TODO.
 
+### 2026-08-20 — F2 review fixes (autonomous continuation): mode-check gap, unguarded test DB writes, fixture leak
+Continuing the F1-F14 fix cycle per the user's explicit workflow, in an autonomous
+loop tick — F1 was done and left awaiting the user's go-ahead on commit/push (an
+irreversible action, correctly not acted on autonomously); F2's fixes are all local,
+reversible work, so continued per "act on established work, wait on irreversible
+steps." Branch: `f2-backend-orchestration-api`.
+
+**Fixed the critical finding**: `internal.js`'s callback handler created a real
+`Application` for any `status:'submitted'`, never actually checking `task.mode`
+despite its own comment claiming "live mode only." Gated on `task.mode === 'live'`;
+a shadow-mode task hitting this path now logs a warning instead of silently
+creating a fake Application. Added a new permanent test for exactly this case.
+
+**Fixed the DB-safety gap**: `npm test` preloaded the real `.env` unconditionally
+(`node -r dotenv/config --test`), so both DB-integration test files ran against
+whatever `DATABASE_URL` was configured with zero guard — a normal dev setup was
+enough to make `npm test` silently write/delete real rows. Both files now require
+an explicit `RUN_DB_TESTS=true` opt-in; `npm test` alone stays safe-by-default.
+
+**Fixed the fixture-leak bug**: `applyTaskCallback.test.js`'s `seedTask()` was
+called outside its `try` block, so a partial failure (User created, Job creation
+then throws) would leave the User row permanently orphaned. Restructured to a
+mutable fixture object populated incrementally, so `cleanup()` can act on whatever
+was actually created, not just a full success.
+
+**Verified for real**: ran with `RUN_DB_TESTS=true` — `applyBotSweep.test.js`'s two
+tests executed against the live Neon DB and passed (a real stale `running` task was
+actually swept to `unknown_outcome`, confirmed via a fresh DB read; a fresh task was
+confirmed untouched). **Could not verify**: `applyTaskCallback.test.js`'s HTTP-based
+idempotency tests (including the new shadow-mode-doesn't-create-Application test) —
+these need a running backend, which needs Redis for sessions, and this environment
+has none available (confirmed no local service, no admin rights to install one —
+same constraint noted in the original 2026-08-19 F2 verification entry, except that
+session apparently had Upstash Redis configured and this one doesn't). Correctly
+skips with a clear reason. **Flagging for whoever has Redis available next**: run
+`applyTaskCallback.test.js` for real once possible — it's the one place the
+`task.mode` fix from this entry is actually exercised end-to-end through the real
+route, not just reviewed by inspection.
+**Why**: the original 2026-08-19 F2 verification pass (a separate session, likely
+your teammate's own Claude Code instance — see the F1 entry above on why) had
+working Redis and marked all F2 test-plan items done, but still missed the
+`task.mode` gap — a good concrete example of why the code review's "verification
+doesn't always mean verification" pattern was worth taking seriously rather than
+just fixing individual bugs and moving on.
+
 ---
 
 ## Open Questions

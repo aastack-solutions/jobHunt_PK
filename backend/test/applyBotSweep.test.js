@@ -3,14 +3,22 @@
 // database to write/read fixture rows against.
 //
 // Un-skipped 2026-08-19 (F2 verification session) now that a live database exists
-// (see MEMORY.md). Requires DATABASE_URL to be set — run via `npm test` with a
-// real backend/.env in place; these two are skipped automatically when it's absent
-// so `npm test` still passes cleanly in an environment with no DB configured.
+// (see MEMORY.md).
+//
+// Fixed 2026-08-20 (code review): `npm test` preloads the real backend/.env
+// unconditionally, so DATABASE_URL being configured for normal dev work was
+// enough, by itself, to make this file silently create/delete real rows on every
+// `npm test` run. RUN_DB_TESTS=true is now a required, separate opt-in — these
+// tests skip by default even with a valid DATABASE_URL present.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const hasDb = Boolean(process.env.DATABASE_URL);
-const skipReason = hasDb ? false : 'requires DATABASE_URL (live database) — not set';
+const hasDb = Boolean(process.env.DATABASE_URL) && process.env.RUN_DB_TESTS === 'true';
+const skipReason = hasDb
+  ? false
+  : Boolean(process.env.DATABASE_URL)
+    ? 'DATABASE_URL is set but RUN_DB_TESTS=true was not — set it explicitly to run this against a real database'
+    : 'requires DATABASE_URL (live database) — not set';
 
 let prisma;
 let sweepStaleApplyTasks;

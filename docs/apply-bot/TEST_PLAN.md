@@ -16,6 +16,22 @@ these can't be automated away and shouldn't be skipped just because they're slow
 
 **Verified 2026-08-18 against a real Neon Postgres instance — see MEMORY.md.**
 
+**2026-08-20 follow-up (code review fix)**: the review's one F1 finding —
+`ApplyTask.applicationId` had no DB-level FK or index despite being the documented
+audit-trail lookup key — is fixed: added `@@index([applicationId])` and a proper
+`application Application? @relation(..., onDelete: SetNull)`. Migration
+`20260819185748_apply_task_application_fk` applied clean against the same live
+Neon DB, verified end to end (created a real `Application` + `ApplyTask`, confirmed
+the relation actually traces back). Also re-confirmed the credential round-trip and
+the sessionState-clear fix directly via Prisma (not through the HTTP routes — Redis
+still isn't available locally, so `PUT`/`GET`/`DELETE /api/apply-credentials` remain
+unexercised end-to-end; only the underlying data-layer logic those routes call was
+re-verified). Fixing this also surfaced and resolved real cross-branch **migration
+drift**: the shared Neon DB had a migration (`pauseReason`, from F7) applied that
+wasn't in this branch's history, and this branch's own first migration's file had
+been regenerated with reordered-but-equivalent SQL, causing a checksum mismatch —
+both reconciled without any data loss. Full story in `MEMORY.md`.
+
 - [x] 🤖 `npx prisma migrate dev` applies cleanly to a fresh Postgres instance — all
       tables, indexes, and foreign keys created with no errors
 - [x] 🖐️ `PUT /api/apply-credentials/greenhouse` with a valid username/password → 201,

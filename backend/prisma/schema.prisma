@@ -145,6 +145,8 @@ model Application {
   job    Job?    @relation(fields: [jobId], references: [id], onDelete: SetNull)
   resume Resume? @relation(fields: [resumeId], references: [id], onDelete: SetNull)
 
+  applyTasks ApplyTask[] // reverse of ApplyTask.applicationId — see that field's own comment
+
   @@index([userId, status])
   @@index([resumeId])
   @@index([userId, appliedAt])
@@ -192,35 +194,54 @@ model ApplyTask {
   id                String    @id @default(cuid())
   userId            String
   jobId             String?
+  // Backfilled by internal.js's callback handler the moment a 'submitted' task
+  // creates its Application row — see docs/apply-bot/TECHNICAL_PLAN.md F13. Fixed
+  // 2026-08-17 (code review, F1 branch): originally had no DB-level FK or index
+  // despite being documented as the audit-trail lookup key — an unindexed scan
+  // waiting to happen the moment that lookup is actually used, and nothing stopped
+  // it from pointing at a deleted Application. onDelete: SetNull, not Cascade — an
+  // Application being deleted should not delete the bot's own audit trail of what
+  // it did; the link just goes stale.
   applicationId     String?
   applyUrl          String
   adapterUsed       String    // "greenhouse" | "lever" | "ashby" | "generic"
   mode              String    // "shadow" | "live"
   status            String    @default("queued")
-  // queued | running | paused_captcha | shadow_complete | submitted | failed
+  // queued | running | paused_human | shadow_complete | submitted | failed
   // | skipped_low_confidence | skipped_duplicate | skipped_cap_reached | unknown_outcome
   // unknown_outcome: set ONLY by applyBotSweep.js when a task is stuck 'running' too
   // long (the apply-bot process likely crashed after possibly already submitting) —
   // deliberately excluded from applyBotSelect.js's auto-retry to avoid a duplicate
   // application; needs manual human resolution.
-  failureClass      String?   // CAPTCHA | AUTH | TIMEOUT | PORTAL_LAYOUT | NETWORK | LOW_CONFIDENCE | SSRF_BLOCKED | UNKNOWN
+  // paused_human (F7, generalized from the original paused_captcha): a human hand-off
+  // is in progress via the live-view — see pauseReason for which kind. Brought into
+  // this branch 2026-08-17 from F7 to reconcile migration history: F7's branch had
+  // already applied this column directly to the shared dev database independently
+  // of this branch, causing Prisma migration drift when this branch's own fix
+  // (applicationId's FK/index, below) tried to migrate — see MEMORY.md's
+  // 2026-08-17 entry for the full story and the "one shared DB across many
+  // branches" root cause.
+  pauseReason       String?   // "captcha" | "email_verification" | "unknown_challenge" — set only while status is paused_human
+  failureClass      String?   // CAPTCHA | EMAIL_VERIFICATION | AUTH | TIMEOUT | PORTAL_LAYOUT | NETWORK | LOW_CONFIDENCE | SSRF_BLOCKED | UNKNOWN
   fieldsFilled      Json?     // field name -> value actually typed; password-like fields redacted
   confidenceScore   Int?      // generic adapter only
   failureReason     String?
   screenshotKeys    String[]  @default([]) // R2 object keys, one per meaningful step
-  captchaDetectedAt DateTime?
-  captchaSolvedAt   DateTime?
+  captchaDetectedAt DateTime? // set when status first transitions to paused_human, any pauseReason
+  captchaSolvedAt   DateTime? // set when a paused_human task resumes (human resolved it)
   startedAt         DateTime?
   completedAt       DateTime?
   createdAt         DateTime  @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  job  Job? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job         Job?         @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
 
   @@index([userId, status])
   @@index([userId, createdAt])
   @@index([jobId])
   @@index([status])
+  @@index([applicationId])
 }
 
 // F14 — Email-Based Application Status Auto-Detection. SCAFFOLDED, NOT ACTIVE.

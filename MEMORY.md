@@ -372,6 +372,53 @@ correctly skipped (Playwright/live-DB-dependent), 0 failing.
 have caught these two bugs now than have them surface as confusing failures the
 first time someone actually fills in a TODO.
 
+### 2026-08-20 — F1 review fix: applicationId FK/index, plus real cross-branch migration drift discovered and reconciled
+Started fixing the one F1 finding from the 11-branch code review (`ApplyTask.applicationId`
+had no DB-level FK or index despite being documented as the audit-trail lookup key).
+Added `@@index([applicationId])` and a proper `Application?` relation
+(`onDelete: SetNull` — an Application being deleted shouldn't delete the bot's own
+audit trail, the link should just go stale). Running the migration against the
+shared Neon DB surfaced a real problem, not a hypothetical one:
+- **Cross-branch migration drift**: the DB already had a migration applied
+  (`pauseReason` on `ApplyTask`) that didn't exist in this branch's migration
+  history at all — traced it to F7's branch (confirmed via `git ls-tree` across all
+  11 branches; it also propagated to F8-F11 since they stack on F7). Root cause:
+  multiple branches sharing one physical Neon database, each independently running
+  `prisma migrate dev` against it. Fixed by copying F7's exact migration file into
+  this branch (byte-identical, verified via checksum) and bringing the
+  corresponding `pauseReason`/schema changes into this branch's `schema.prisma` too.
+- **A second, separate drift symptom**: this branch's own first migration
+  (`20260818170025_apply_bot_and_tracking`) had two `CREATE INDEX` statements in a
+  different order than what was actually applied to the DB — semantically
+  identical, but the checksum mismatch still blocked Prisma. Confirmed via SHA-256:
+  my original (from this session's earlier work, still recoverable from a local git
+  stash) matched the DB's recorded checksum exactly; the branch's committed version
+  didn't. Fixed by restoring the byte-identical original.
+- **Did NOT run `prisma migrate reset`** despite Prisma suggesting it — checked
+  first and the shared DB had real data (2,808 jobs, 10 `ApplyTask` rows, 1
+  `ApplyCredential`, 1 real user from the teammate's own F1 verification). Asked the
+  user how to proceed rather than assuming; they chose reconcile-without-data-loss.
+  All of that data is confirmed intact after the fix.
+**Verification performed**: migration applied clean; Prisma client regenerated;
+credential encrypt→decrypt round trip and the sessionState-clear fix re-confirmed
+directly via Prisma (mirroring `applyCredentials.js`'s exact logic); the new
+`applicationId` relation confirmed working end-to-end (created a real Application +
+ApplyTask, traced the relation back). All done against a throwaway test user,
+cleaned up after.
+**Also worth recording honestly**: my first verification attempt crashed
+(`APPLY_BOT_MASTER_KEY` was never actually added to the real `.env` — only
+`.env.example` had ever been updated) *after* creating its throwaway test user but
+*before* reaching its own cleanup step, leaving an orphaned row in the shared DB —
+the exact same class of bug the F2 review flagged in `applyTaskCallback.test.js`'s
+`seedTask()` (fixture creation outside try/finally). Caught it by checking user
+count before/after rather than assuming cleanup worked, and deleted the orphan.
+Generated and added the missing `APPLY_BOT_MASTER_KEY` (and the rest of the
+`APPLY_BOT_*` vars, which had also never been copied from `.env.example` into the
+real `.env`) as part of this fix.
+**Why**: the user asked to fix and verify F1 specifically — this is what "verify"
+actually required once a real shared database was involved, not just applying the
+one intended schema change in isolation.
+
 ---
 
 ## Open Questions

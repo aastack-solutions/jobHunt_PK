@@ -28,9 +28,19 @@
 const { bestMatch, scanFields } = require('../engine/fieldTaxonomy');
 const { detectCaptcha } = require('../engine/captchaDetector');
 
+// Exact-or-subdomain match, not substring — found & fixed 2026-08-21 (security
+// review). The original `.includes('greenhouse.io')` also matches a hostname
+// like "boards.greenhouse.io.attacker.com" (the real domain appears as a
+// substring, not as the actual host). Since applyUrl comes from ~13 untrusted
+// external job-fetch sources and this adapter is the one that actually types a
+// real decrypted credential into the page (see login() below), this was a
+// complete, unattended credential-exfiltration path: a malicious listing routed
+// here, the bot decrypted the user's real Greenhouse password, and typed it into
+// whatever the attacker's fake login form offered.
 function matches(applyUrl) {
   try {
-    return new URL(applyUrl).hostname.toLowerCase().includes('greenhouse.io');
+    const hostname = new URL(applyUrl).hostname.toLowerCase();
+    return hostname === 'greenhouse.io' || hostname.endsWith('.greenhouse.io');
   } catch {
     return false;
   }
@@ -39,8 +49,24 @@ function matches(applyUrl) {
 // Most Greenhouse boards don't require a login to apply — credential is only used
 // if the user configured one anyway (e.g. an internal/gated board). Guest apply is
 // the common case, so a missing/failed login is not fatal here.
+//
+// Defense-in-depth, added alongside the matches() fix above: re-verify the page
+// is actually still on a real greenhouse.io host immediately before typing the
+// credential, not just at task-creation time. matches() is the primary guard,
+// but a credential-typing function that trusts its caller completely is one bug
+// away (a future matches() regression, a mid-session redirect) from repeating
+// the exact same exfiltration path — this makes the check redundant on purpose.
 async function login(page, credential) {
   if (!credential) return { attempted: false };
+  let hostname;
+  try {
+    hostname = new URL(page.url()).hostname.toLowerCase();
+  } catch {
+    return { attempted: false };
+  }
+  if (hostname !== 'greenhouse.io' && !hostname.endsWith('.greenhouse.io')) {
+    return { attempted: false };
+  }
   const loginLink = page.getByRole('link', { name: /log in|sign in/i }).first();
   if ((await loginLink.count()) === 0) return { attempted: false };
   await loginLink.click().catch(() => {});

@@ -31,9 +31,16 @@
 const { bestMatch, scanFields } = require('../engine/fieldTaxonomy');
 const { detectCaptcha } = require('../engine/captchaDetector');
 
+// Exact-or-subdomain match, not substring — found & fixed 2026-08-21 (security
+// review). The original `.includes('lever.co')` also matches a hostname like
+// "jobs.lever.co.attacker.com" (the real domain appears as a substring, not as
+// the actual host), which is a real, untrusted-input-reachable spoof since
+// applyUrl comes from ~13 external job-fetch sources. See the identical fix in
+// backend/src/services/applyBotPlatform.js for the full writeup.
 function matches(applyUrl) {
   try {
-    return new URL(applyUrl).hostname.toLowerCase().includes('lever.co');
+    const hostname = new URL(applyUrl).hostname.toLowerCase();
+    return hostname === 'lever.co' || hostname.endsWith('.lever.co');
   } catch {
     return false;
   }

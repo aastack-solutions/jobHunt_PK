@@ -339,6 +339,63 @@ selection dedupe) per the plan's own required design point.
       authentication (session cookie required, task ownership verified) is also
       confirmed rejecting both a missing cookie and a task the caller doesn't own
 
+**2026-08-20 follow-up (code review fix)**: found and fixed three more real
+bugs, none exercised by the 2026-08-19 session above.
+
+1. **Severe — shadow mode paused for a human on every detected challenge,
+   same bug shape as F4/F5/F6's worker.js fix, just showing up as a 10-minute
+   PAUSE instead of an immediate FAIL.** `handleChallenge()` called
+   `waitForHumanResolution()` unconditionally, regardless of `task.mode`.
+   Shadow mode never submits, so there's nothing a human solving the
+   challenge would unblock — but with the worker's `concurrency: 1`, a single
+   paused shadow task blocks the ENTIRE queue behind it for up to
+   `PAUSE_TIMEOUT_MS` (10 min), and F4/F5 already confirmed CAPTCHA present on
+   ~100% of real Lever/Greenhouse postings. Unfixed, shadow mode's supposed-
+   to-be-unattended daily batch (20-30 tasks/user) could only make progress
+   with a human live at the console solving CAPTCHAs serially, one task at a
+   time. Fixed: live mode's pause behavior is unchanged (still genuinely
+   needs a human); shadow mode now records the challenge in
+   `fieldsFilled._challengeDetectedPreFill`/`_challengeDetectedPostFill`
+   instead of pausing. **Verified with real, live evidence**: exported
+   `runTask()` and wrote two scripts against hCaptcha's own stable public
+   demo page (`https://accounts.hcaptcha.com/demo`, not a job posting subject
+   to churn) with `backendApi` mocked — shadow mode completed in ~1.7s with
+   the challenge recorded and no `paused_human` ever reported; live mode
+   (with `PAUSE_TIMEOUT_MS_OVERRIDE=3000` for the test) genuinely reported
+   `paused_human` and then failed as `CAPTCHA`/timed-out at ~4.5s, matching
+   the override. Turned into a permanent test,
+   `test/shadowModeChallenge.test.js` (2 cases, both pass for real; skips
+   gracefully if the demo page or Playwright is unreachable).
+2. **Severe, different file — `backend/src/routes/applyBotLive.js`'s
+   `clientWs` had no `.on('error', ...)` handler**, unlike `upstream` right
+   next to it. Node's `EventEmitter` throws when an `'error'` event has no
+   registered listener (confirmed directly: a bare `emit('error', ...)` with
+   zero listeners throws synchronously), and this file has no process-level
+   `uncaughtException` handler. A single flaky or malformed client WebSocket
+   connection — trivially triggerable by any user's network hiccup, not just
+   an attacker — could have crashed the ENTIRE backend process for every
+   user, not just dropped one live-view session. Fixed by adding the missing
+   handler, symmetric with `upstream`'s. **Verified with a real `ws`
+   WebSocket instance**: reproduced the crash with the old code shape (an
+   unhandled `emit('error', ...)` threw and would have crashed the process),
+   then confirmed the fix (a registered listener) handles the identical event
+   gracefully with no throw.
+3. **Same F2 bug shape, carried forward**: `internal.js`'s
+   `status === 'submitted' && task.job` check (the Application-creation
+   branch) still didn't check `task.mode === 'live'` on this branch — this
+   branch predates the F2 fix. Not actively triggered under the current
+   `worker.js` (shadow mode never reports `status: 'submitted'`), but it's
+   the same class of defect already found and fixed twice elsewhere, so
+   fixed here too as defense-in-depth rather than relying on every future
+   `worker.js` change to keep respecting an invariant this code doesn't
+   itself enforce. `npm test` re-run after: 44 pass, 1 skip (no local
+   backend server), 0 fail.
+
+Also confirmed the `pauseReason` migration (already reconciled onto the
+shared Neon DB during F1's session) is fully in sync on this branch too —
+`npx prisma migrate status` reports "Database schema is up to date!", no
+drift.
+
 ## F8 — Generic Engine (Non-ATS Sources)
 
 - [ ] 🤖 **Gate regression**: with `APPLY_BOT_GENERIC_ENABLED=false`, confirm

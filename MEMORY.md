@@ -39,7 +39,7 @@ touching what.
 | F4 | Lever adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — name/email/resume selectors confirmed correct, CAPTCHA (hCaptcha) confirmed present on all 5 (resolves prior open question), 2 real bugs found & fixed (locateSubmit selector, isAlreadySolved textarea-vs-input check) |
 | F5 | Greenhouse adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings on the new job-boards.greenhouse.io domain — selectors correct as-is (no code bug found), CAPTCHA confirmed present on all 5 (1 only post-fill, confirming the dual pre/post check matters), hydration-timing question resolved (no wait needed) |
 | F6 | Ashby adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — 2 real bugs found & fixed (a genuine field-scan hydration-timing race, unlike F5's Greenhouse where none was needed; and a click-through-to-/application form flow); CAPTCHA not observed on any of the 5 (unlike F4/F5's 100%) |
-| F7 | CAPTCHA / bot-challenge live-view | ✅ Done, verified (2 items narrower-scope) | Claude (session) | Verified 2026-08-19 against a real hCaptcha — full pause→live-view→resume cycle confirmed live, critical TASK_DEADLINE_MS pause-aware regression confirmed with real evidence, 1 real bug fixed (WS auth accepted-then-closed instead of never-accepted). Mouse/keyboard round-trip and email-verification not exercised against real occurrences — see TEST_PLAN.md |
+| F7 | CAPTCHA / bot-challenge live-view | ✅ Done, verified (2 items narrower-scope) | Claude (session) | Verified 2026-08-19 (WS auth bug fixed, pause-aware deadline confirmed live); code-review fix 2026-08-20 — 3 more real bugs: shadow mode paused for a human on every challenge (queue-blocking, same shape as F4-F6), applyBotLive.js's clientWs missing an error handler (could crash the whole backend), F2's mode-check bug carried forward from internal.js. All verified live against real Chromium/hCaptcha/ws |
 | F8 | Generic engine (non-ATS sources) | 🔴 Not started, gated off | Unassigned | `APPLY_BOT_GENERIC_ENABLED=false` — don't enable until built |
 | F9 | Failure measurement & alerting | 🟡 Partially built | Unassigned | Staleness/needs-review dashboard alerting done 2026-08-17; per-adapter success-rate reporting still open |
 | F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 43 automated tests passing, 3 skipped (Playwright-only) as of 2026-08-19 — DB-dependent sweep/callback tests un-skipped and made real during F2 verification; remaining items need a real Playwright install |
@@ -53,6 +53,91 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-20 — F7 code-review fix: shadow mode blocked the whole queue by pausing for every challenge, applyBotLive.js could crash the entire backend on a bad client connection, F2's mode-check bug carried forward
+Branch: `f7-captcha-live-view`. Same "fix every bug, verify against the test
+plan" pass as F1-F6 (see those entries below) — this branch was the most
+complex feature reviewed so far, and it earned that reputation: three real
+bugs found, two of them severe.
+
+**Bug #1 (severe) — shadow mode paused for a human on every detected
+challenge.** `worker.js`'s `handleChallenge()` called
+`waitForHumanResolution()` unconditionally, with no `task.mode` check — the
+same bug SHAPE already found and fixed three times this session (F2's
+`internal.js`, F4/F5/F6's `worker.js`), but a more severe INSTANCE of it
+here: instead of an immediate fail, this one actually PAUSES for up to
+`PAUSE_TIMEOUT_MS` (10 minutes), and with the worker's `concurrency: 1`, a
+paused task blocks every other queued task behind it for that whole window.
+Combined with F4/F5's finding that CAPTCHA is present on ~100% of real
+Lever/Greenhouse postings, an unmodified daily batch of 20-30 shadow-mode
+tasks could only make progress with a human live at the console solving
+CAPTCHAs one at a time — completely defeating shadow mode's purpose as an
+unattended daily process. Fixed: live mode's pause is unchanged and correct
+(it genuinely needs a human, per the plan's own "Autonomy... only human
+interaction: solving a CAPTCHA" language, which is specifically scoped to a
+task that would otherwise really submit); shadow mode now records the
+challenge in `fieldsFilled._challengeDetectedPreFill`/`_challengeDetectedPostFill`
+instead of pausing.
+
+**Verified with real, live evidence, not just code review**: exported
+`runTask()` from `worker.js` and wrote two standalone scripts, mocking only
+`backendApi` (the one whole-object import — `resolveAdapter` and the
+`browserSession` functions are destructured at require time in `worker.js`
+and can't be swapped from outside without `mock.module`, so this was the
+practical mocking boundary). Pointed both at hCaptcha's own stable public
+demo page (`https://accounts.hcaptcha.com/demo`) rather than a real job
+posting, specifically to avoid the posting-closes-mid-session churn F5/F6
+both hit — this page reliably has a real CAPTCHA widget and isn't going
+anywhere. Shadow-mode script: completed in ~1.7s, `paused_human` never
+reported, challenge correctly recorded as metadata. Live-mode script (with
+`PAUSE_TIMEOUT_MS_OVERRIDE=3000` so the test doesn't take 10 real minutes):
+correctly reported `paused_human`, then correctly failed as `CAPTCHA`/timed-
+out once the override window elapsed unresolved, confirming the pause itself
+still works exactly as before. Both turned into a permanent test,
+`test/shadowModeChallenge.test.js`.
+
+**Bug #2 (severe, different file) — `backend/src/routes/applyBotLive.js`'s
+`clientWs` had no `.on('error', ...)` handler**, unlike `upstream` sitting
+right next to it with one. Confirmed directly, not assumed: Node's
+`EventEmitter` throws synchronously when an `'error'` event fires with zero
+registered listeners (`e.emit('error', new Error(...))` on a bare
+`EventEmitter` with no listener throws immediately) — and `app.js` has no
+process-level `uncaughtException` handler to catch it as a last resort. This
+means a single flaky or malformed client WebSocket connection through the
+live-view proxy — a dropped network mid-frame, a bad frame, nothing an
+attacker even needs to try deliberately — could have thrown an unhandled
+exception that crashes the ENTIRE backend Node process, taking down the API
+for every user, not just one dropped live-view session. A much larger blast
+radius than the feature it was found in. **Reproduced with a real `ws`
+WebSocket instance** (a real client connecting to a real local WS server,
+`ws.emit('error', ...)` after a genuine handshake): confirmed the old code
+shape throws, confirmed the fix (a registered `.on('error', ...)` listener,
+symmetric with `upstream`'s) handles the identical event gracefully. Fixed
+by adding the missing listener.
+
+**Bug #3 — the F2 mode-check bug, present here too.** This branch predates
+the F2 fix, so `internal.js`'s `status === 'submitted' && task.job` check
+(the Application-creation branch) still didn't verify `task.mode === 'live'`
+— identical to what F2's entry below describes. Not actively triggered under
+the current `worker.js` (shadow mode never reports `status: 'submitted'`,
+only `shadow_complete`), so this is defense-in-depth rather than a live
+exploit path right now, but it's the exact same defect shape found and fixed
+twice already this session — worth closing everywhere it appears rather than
+trusting every future `worker.js` change to keep respecting an invariant
+this file doesn't itself enforce. Re-ran `npm test` after: 44 pass, 1 skip
+(no local backend server reachable), 0 fail.
+
+**Also confirmed, not just assumed**: `npx prisma migrate status` on this
+branch reports "Database schema is up to date!" — the `pauseReason` column
+F7 added is already reconciled onto the shared Neon DB from F1's earlier
+migration-drift work, no action needed here.
+
+**Why**: worth explicitly re-checking for the "side-effecting branch missing
+a mode/state check" bug shape in every remaining branch (F8-F11) — it's now
+been found four separate times (F2, F4/F5/F6 as one shared instance, F7) in
+independently-written code, which suggests it's an easy mistake to make in
+this specific codebase's shape (worker.js/internal.js's callback-driven,
+mode-branching design) rather than a one-off.
 
 ### 2026-08-19 — F7 built and verified against a real hCaptcha; critical pause-aware-deadline requirement confirmed with real evidence; 1 real security bug fixed
 Branch: `f7-captcha-live-view` (branched from `master` after merging F6 in).

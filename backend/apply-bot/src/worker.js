@@ -151,12 +151,34 @@ async function runTask(applyTaskId, ctx) {
     }
   };
 
-  // Handles a detected challenge at any checkpoint: pauses for a human via the
-  // live view, and on failure to resolve reports the terminal failure and returns
-  // `false` so the caller knows to stop. Returns `true` if the human resolved it
-  // and the caller should continue past this checkpoint as normal.
+  // Handles a detected challenge at any checkpoint. LIVE mode pauses for a human
+  // via the live view (the original behavior); on failure to resolve, reports the
+  // terminal failure and returns `proceed: false` so the caller knows to stop.
+  //
+  // SHADOW mode does NOT pause — added 2026-08-20, see MEMORY.md's F7 entry for
+  // the full reasoning. Two compounding reasons: (1) shadow mode never submits
+  // anything, so there is nothing a human solving the challenge would unblock —
+  // same "task.mode check missing before a side-effecting branch" bug shape found
+  // and fixed in F4/F5/F6's worker.js and F2's internal.js, just showing up here as
+  // an unconditional PAUSE instead of an unconditional immediate FAIL. (2) This one
+  // is more severe than the F4-F6 version: with `concurrency: 1`, a single paused
+  // task blocks the ENTIRE queue behind it for up to PAUSE_TIMEOUT_MS (10 minutes)
+  // — and F4/F5 already confirmed CAPTCHA present on ~100% of real Lever/Greenhouse
+  // postings, so an unmodified pause-on-every-challenge would turn shadow mode's
+  // supposed-to-be-unattended daily batch (20-30 tasks/user) into something that
+  // can only make progress with a human live at the console solving CAPTCHAs
+  // serially, one task at a time — the opposite of what shadow mode is for. Live
+  // mode's pause behavior is intentional and unchanged: live mode really can't
+  // proceed without a human past an unsolved challenge, and per the plan
+  // ("Autonomy... only human interaction: solving a CAPTCHA via a live view") that
+  // hand-off is specifically scoped to a task that would otherwise actually submit.
   const handleChallenge = async (challenge, stepLabel) => {
     await captureStep(stepLabel);
+
+    if (task.mode !== 'live') {
+      return { proceed: true, challenge };
+    }
+
     const resolved = await waitForHumanResolution(applyTaskId, session, challenge.pauseReason, ctx);
     if (!resolved) {
       await backendApi.reportResult(applyTaskId, {
@@ -164,7 +186,7 @@ async function runTask(applyTaskId, ctx) {
         failureReason: `Unsolved ${challenge.pauseReason} challenge — timed out after ${PAUSE_TIMEOUT_MS / 60000} minutes with no human response.`,
         screenshotKeys,
       });
-      return false;
+      return { proceed: false };
     }
     // Re-check rather than blindly trusting the human's "I solved it" signal —
     // the same page is still open, so this is cheap and catches a premature click.
@@ -175,9 +197,9 @@ async function runTask(applyTaskId, ctx) {
         failureReason: `${stillPresent.pauseReason} challenge still present after being marked resolved.`,
         screenshotKeys,
       });
-      return false;
+      return { proceed: false };
     }
-    return true;
+    return { proceed: true };
   };
 
   try {
@@ -203,12 +225,21 @@ async function runTask(applyTaskId, ctx) {
     }
 
     const preFillChallenge = await checkChallenge(session.page, adapter);
+    let preFillChallengeInfo = null;
     if (preFillChallenge) {
-      if (!(await handleChallenge(preFillChallenge, 'captcha-detected'))) return;
+      const outcome = await handleChallenge(preFillChallenge, 'captcha-detected');
+      if (!outcome.proceed) return;
+      if (outcome.challenge) preFillChallengeInfo = outcome.challenge;
     }
 
     const { fieldsFilled, confidence } = await adapter.fillApplication(session.page, profile);
     await captureStep('after-fill');
+    // Shadow-mode-only metadata (see handleChallenge's comment above) — carried in
+    // fieldsFilled (already free-form JSON) rather than a new top-level result key,
+    // since internal.js's callback schema is .strict().
+    if (preFillChallengeInfo) {
+      fieldsFilled._challengeDetectedPreFill = { pauseReason: preFillChallengeInfo.pauseReason };
+    }
 
     if (confidence < LOW_CONFIDENCE_THRESHOLD) {
       await backendApi.reportResult(applyTaskId, {
@@ -221,7 +252,9 @@ async function runTask(applyTaskId, ctx) {
 
     const postFillChallenge = await checkChallenge(session.page, adapter);
     if (postFillChallenge) {
-      if (!(await handleChallenge(postFillChallenge, 'captcha-after-fill'))) return;
+      const outcome = await handleChallenge(postFillChallenge, 'captcha-after-fill');
+      if (!outcome.proceed) return;
+      if (outcome.challenge) fieldsFilled._challengeDetectedPostFill = { pauseReason: outcome.challenge.pauseReason };
     }
 
     if (task.mode !== 'live') {
@@ -356,4 +389,7 @@ function createApplyBotWorker() {
   return worker;
 }
 
-module.exports = { createApplyBotWorker, getPausedSession, registerPausedSession, clearPausedSession };
+module.exports = {
+  createApplyBotWorker, getPausedSession, registerPausedSession, clearPausedSession,
+  runTask, // exported for test/shadowModeChallenge.test.js only
+};

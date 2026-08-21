@@ -114,6 +114,20 @@ function attachApplyBotLiveProxy(httpServer) {
       logger.error(`applyBotLive: upstream connection error for task ${taskId} — ${err.message}`);
       closeBoth();
     });
+    // Found 2026-08-20 (code review): clientWs had no 'error' listener, unlike
+    // upstream above. Node's EventEmitter throws when an 'error' event has no
+    // registered listener — confirmed directly (a bare EventEmitter.emit('error',
+    // ...) with zero listeners throws synchronously) — and this file has no
+    // process-level uncaughtException handler to catch it. A single flaky or
+    // malformed client connection (a dropped network mid-frame, a bad WS frame —
+    // trivially triggerable by any user, not just an attacker) would otherwise
+    // crash the ENTIRE backend process for every user, not just this one
+    // connection — a much larger blast radius than a single dropped live-view
+    // session warrants.
+    clientWs.on('error', (err) => {
+      logger.error(`applyBotLive: client connection error for task ${taskId} — ${err.message}`);
+      closeBoth();
+    });
   });
 
   logger.info('applyBotLive: WS proxy attached at /api/apply-bot/live/:taskId');

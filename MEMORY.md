@@ -36,7 +36,7 @@ touching what.
 | F1 | Data model & credential encryption | ✅ Done, verified | Claude (session) | Verified 2026-08-18 against real Neon Postgres — all 7 test-plan items pass; one real bug found & fixed (sessionStateIv/authTag not cleared on credential update) |
 | F2 | Backend orchestration API (claim/callback/select) | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon+Upstash — all 10 test-plan items pass; found & fixed a real bug (bullConnection.js dropped TLS for rediss:// — hung every BullMQ queue, not just this one) |
 | F3 | apply-bot service scaffold & worker runtime | ✅ Done, verified (2 items env-blocked) | Claude (session) | Verified 2026-08-19 locally (no Docker) — full worker pipeline, TIMEOUT deadline, maxStalledCount:0 all confirmed live; docker build (no Docker) and real SIGTERM delivery (Windows limitation) need the actual Railway deploy |
-| F4 | Lever adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — name/email/resume selectors confirmed correct, CAPTCHA (hCaptcha) confirmed present on all 5 (resolves prior open question), 2 real bugs found & fixed (locateSubmit selector, isAlreadySolved textarea-vs-input check) |
+| F4 | Lever adapter — browser automation + selector verification | ✅ Done, verified (1 more fix code-reviewed, not yet live-run) | Claude (session) | Verified 2026-08-19 against 5 real live postings (selectors, CAPTCHA presence, 2 bugs fixed); code-review fix 2026-08-20 — worker.js's CAPTCHA gate blocked shadow mode entirely for CAPTCHA-protected ATSes, contradicting the plan's own F5 definition of done, now mode-gated like F2's fix; also benefits F5/F6 since they share worker.js |
 | F5 | Greenhouse adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA is the expected common case, not an edge case; login-page detection now automatic |
 | F6 | Ashby adapter — browser automation + selector verification | 🟡 Built, unverified | Unassigned | Selectors are guesses; CAPTCHA presence unconfirmed by research; login-page detection now automatic |
 | F7 | CAPTCHA / bot-challenge live-view | 🔴 Not started | Unassigned | Scope grew: must also cover email-verification challenges AND make TASK_DEADLINE_MS pause-aware (see Decisions Log 2026-08-17) |
@@ -53,6 +53,60 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-20 — F4 code-review fix: worker.js's CAPTCHA gate blocked shadow mode for every CAPTCHA-protected ATS, contradicting the plan's own F5 "Definition of done"
+Branch: `f4-lever-adapter`. Same "fix every bug, verify against the test plan"
+pass as F1/F2/F3 (see those entries below).
+
+**Real bug found while re-checking the F4 verification below**: that entry's
+"shadow mode correctly fills name/email/resume" claim was actually produced by
+calling `leverAdapter.js`'s `fillApplication()` directly — deliberately
+bypassing `worker.js`'s pre-fill CAPTCHA gate, as the commit message for that
+work honestly says ("on purpose, since that's what needs verifying here"). That
+bypass was *necessary* because `worker.js`'s `runTask()` gated on a detected
+CAPTCHA unconditionally, regardless of `task.mode` — so the real shadow-mode
+pipeline, run as an actual worker task rather than a direct function call,
+could never have reached `fillApplication()` for Lever at all: all 5 postings
+tested have hCaptcha. Checked `docs/apply-bot/TECHNICAL_PLAN.md`'s F5 section
+to see whether this was intentional scope, and it directly says the opposite:
+"Definition of done: a real form filled correctly... in shadow mode... **with
+CAPTCHA correctly detected and classified** (not silently mis-filled) when
+present" — the plan explicitly wants both outcomes together, not a CAPTCHA
+gate that prevents the fill from ever being attempted. This is the exact same
+bug *shape* as F2's `internal.js` fix (a side-effecting branch missing a
+`task.mode` check before acting) — same root cause, different file, found by
+applying the same scrutiny to a sibling piece of logic.
+
+**Fix**: in `worker.js`'s `runTask()`, both the pre-fill and post-fill CAPTCHA
+checks now only immediately fail the task when `task.mode === 'live'` (live
+mode genuinely can't proceed past an unsolved CAPTCHA until F7's live-view
+exists, so that half of the original behavior is correct and unchanged).
+Shadow mode now fills the form regardless of a detected CAPTCHA and records
+the detection under `fieldsFilled._captchaDetectedPreFill` /
+`_captchaDetectedPostFill` — reusing the existing free-form `fieldsFilled`
+JSON field rather than adding a new top-level result key, since
+`internal.js`'s callback schema is `.strict()` and would otherwise reject an
+unrecognized field with a 400.
+
+**Verification honestly scoped**: confirmed by code review and a syntax check
+(`node --check`) only — `runTask()` isn't exported from `worker.js` and isn't
+practical to exercise end-to-end without a live Redis + backend + real ATS
+posting, which (same as F2/F3's entries below) this environment doesn't have
+provisioned right now. This is a real, narrow, mechanical fix (two added
+`&& task.mode === 'live'` conditions plus two new metadata-only object keys)
+in the same file and pattern already proven correct for the identical bug
+shape in F2, but it has NOT been run against a real worker task in this
+session — flagging that gap explicitly rather than claiming more than was
+actually done. **This also affects F5 (Greenhouse) and F6 (Ashby) for free**,
+since all three adapters share this one gate in `worker.js` — worth
+re-checking when those branches are picked up, since neither has been touched
+yet this session (F5's checklist is 100% unchecked, F6 likewise).
+
+**Why**: same reasoning as the F2 finding it mirrors — a task.mode check
+missing on a side-effecting branch is an easy category of bug to reintroduce
+independently in parallel code (worker.js and internal.js were written by
+different people/sessions), and it's worth explicitly checking for the same
+shape elsewhere once found once, which is exactly what surfaced this.
 
 ### 2026-08-19 — F4 verified against 5 real live Lever postings; CAPTCHA question resolved, 2 real bugs fixed
 Branch: `f4-lever-adapter` (branched from `master` after merging F3 in).

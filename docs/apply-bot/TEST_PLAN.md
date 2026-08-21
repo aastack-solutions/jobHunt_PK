@@ -169,6 +169,33 @@ submit-shaped buttons, and `captchaDetector.js`'s `isAlreadySolved()` checked fo
 `<textarea>` response element when Lever's real hCaptcha integration uses
 `<input type="hidden">`.
 
+**2026-08-20 follow-up (code review fix, worker.js — not this file, but this is
+where the gap was found)**: the "shadow mode correctly fills name/email/resume"
+item above was verified by calling `fillApplication()` directly, deliberately
+bypassing the worker's pre-fill CAPTCHA gate (see the commit message — "on
+purpose, since that's what needs verifying here"). That bypass was necessary
+because `worker.js`'s `runTask()` gated on a detected CAPTCHA *unconditionally*,
+regardless of `task.mode` — so the real shadow-mode pipeline could never have
+reached `fillApplication()` for Lever at all, since all 5 tested postings have a
+CAPTCHA. That directly contradicts the plan's own F5 "Definition of done" ("a
+real form filled correctly... in shadow mode... WITH CAPTCHA correctly detected
+... when present" — both together, not one instead of the other). Fixed in
+`worker.js`: the immediate-fail branch now only fires when `task.mode ===
+'live'`; shadow mode now fills the form regardless of a detected CAPTCHA and
+records the detection in `fieldsFilled._captchaDetectedPreFill` /
+`_captchaDetectedPostFill` (reusing the existing free-form `fieldsFilled` JSON
+field — no schema or callback-contract change needed, since `internal.js`'s
+callback schema is `.strict()` at the top level but `fieldsFilled` itself is
+already `z.record(z.string(), z.any())`). This is the same bug shape as F2's
+`internal.js` fix (a side-effecting branch missing a `task.mode` check) —
+same root cause, different file. **Verified by code review and a syntax check
+only in this session** (matches the already-tested F2 pattern exactly, but
+`runTask()` isn't exported and isn't practical to exercise end-to-end without
+a live Redis+backend+adapter harness in this environment — see the F2/F3
+entries for why that's currently unavailable here); needs a real shadow-mode
+run against a live CAPTCHA-gated posting to fully close the loop, same as the
+rest of this file's env-blocked items.
+
 ## F5 — Greenhouse Adapter
 
 - [ ] 🖐️ Against 3+ different real, currently-open Greenhouse postings, shadow mode

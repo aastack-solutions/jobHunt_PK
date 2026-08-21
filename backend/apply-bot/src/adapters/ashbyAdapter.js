@@ -23,9 +23,15 @@
 const { bestMatch, scanFields } = require('../engine/fieldTaxonomy');
 const { detectCaptcha } = require('../engine/captchaDetector');
 
+// Exact-or-subdomain match, not substring — found & fixed 2026-08-21 (security
+// review). The original `.includes('ashbyhq.com')` also matches a hostname like
+// "jobs.ashbyhq.com.attacker.com" (the real domain appears as a substring, not
+// as the actual host). See the identical fix in
+// backend/src/services/applyBotPlatform.js for the full writeup.
 function matches(applyUrl) {
   try {
-    return new URL(applyUrl).hostname.toLowerCase().includes('ashbyhq.com');
+    const hostname = new URL(applyUrl).hostname.toLowerCase();
+    return hostname === 'ashbyhq.com' || hostname.endsWith('.ashbyhq.com');
   } catch {
     return false;
   }
@@ -79,9 +85,27 @@ async function ensureApplicationFormVisible(page) {
 // so this isn't a hypothetical concern for this class of ATS. `id`/`name` survive
 // a DOM reorder or sibling insertion; a raw index does not. Falls back to the
 // original index only when a field has neither (e.g. some custom questions).
+// field.id/field.name are read straight off untrusted, third-party page DOM
+// attributes (scanFields() in fieldTaxonomy.js). Found & fixed 2026-08-21
+// (security review): interpolating them unescaped into the quoted attribute
+// selector below lets a crafted id/name value (containing a `"` that breaks out
+// of the quoted value) redirect this locator to resolve against a different
+// element than the one bestMatch() actually scored — breaking the
+// confidence-scoring's field-to-target guarantee this code otherwise relies on.
+//
+// Note this is NOT the DOM's CSS.escape() (used elsewhere in fieldTaxonomy.js,
+// but only inside a page.evaluate() callback that runs in the browser —
+// `CSS` is not a Node.js global, confirmed directly, and this function runs in
+// Node since it calls the Node-side page.locator() API). Escaping the
+// backslash and the quote character is what a quoted CSS attribute-value
+// string actually needs to stay a literal string, not be reinterpreted.
+function escapeAttrValue(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 function locatorForField(page, field) {
-  if (field.id) return page.locator(`[id="${field.id}"]`).first();
-  if (field.name) return page.locator(`[name="${field.name}"]`).first();
+  if (field.id) return page.locator(`[id="${escapeAttrValue(field.id)}"]`).first();
+  if (field.name) return page.locator(`[name="${escapeAttrValue(field.name)}"]`).first();
   return page.locator('input, textarea, select').nth(field.index);
 }
 

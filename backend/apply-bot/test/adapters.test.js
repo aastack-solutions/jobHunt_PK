@@ -157,11 +157,52 @@ test('genericAdapter: locateSubmit does not match an unrelated "apply" link', { 
     <button>Apply to other jobs</button>
     <button>Submit Application</button>
   </body></html>`;
+  // locateSubmit() is async (fixed 2026-08-20 — see the file itself): a Playwright
+  // Locator is always truthy regardless of match count, so the original
+  // synchronous version's `if (candidate)` check never actually verified anything.
+  // This specific fixture happened to pass under the old code anyway, purely by
+  // coincidence — pattern #1 ("submit application") exists on THIS page, so the
+  // old code returned a "correct" answer without the fallback logic it claimed to
+  // have ever running. See the next test for a fixture that actually exercises it.
   const chosen = await withPage(DECOY, async (page) => {
-    const locator = genericAdapter.locateSubmit(page);
+    const locator = await genericAdapter.locateSubmit(page);
     return locator.innerText();
   });
   assert.equal(chosen, 'Submit Application');
+});
+
+test('genericAdapter: locateSubmit falls back correctly when pattern #1 does not exist on the page', { skip: pwSkip }, async () => {
+  // Proves the actual fallback mechanism the previous test's fixture never
+  // exercised: no button reads "Submit Application" here, only "Apply Now"
+  // (pattern #4). Found and fixed 2026-08-20: the original synchronous
+  // `if (candidate)` check was always truthy, so this returned pattern #1's
+  // locator (0 real matches) instead of ever reaching pattern #4 — confirmed
+  // directly before the fix (candidate.count() === 0, yet the truthy check passed).
+  const APPLY_NOW_ONLY = `<!doctype html><html><body>
+    <button>Apply Now</button>
+  </body></html>`;
+  const { count, text } = await withPage(APPLY_NOW_ONLY, async (page) => {
+    const locator = await genericAdapter.locateSubmit(page);
+    return { count: await locator.count(), text: await locator.innerText() };
+  });
+  assert.equal(count, 1, 'must actually resolve to the real button, not a zero-match locator');
+  assert.equal(text, 'Apply Now');
+});
+
+test('genericAdapter: does not report a field as filled if the fill genuinely fails', { skip: pwSkip }, async () => {
+  // Found and fixed 2026-08-20: fillByIndex swallowed fill()/setInputFiles()
+  // errors via .catch(() => {}) and then recorded fieldsFilled[key] unconditionally
+  // regardless of whether the write actually happened — directly undermining the
+  // abstain rule, this adapter's own comment calls it "the entire safety
+  // mechanism". Confirmed with a genuinely non-fillable (disabled) email input.
+  const DISABLED_EMAIL_FORM = `<!doctype html><html><body><form>
+    <label for="nm">Full Name</label><input id="nm" type="text" />
+    <label for="em">Email address</label><input id="em" type="text" disabled />
+    <label for="rs">Upload resume</label><input id="rs" type="file" />
+  </form></body></html>`;
+  const result = await withPage(DISABLED_EMAIL_FORM, (page) => genericAdapter.fillApplication(page, PROFILE));
+  assert.equal(result.fieldsFilled.email, undefined, 'a genuinely failed fill must not be reported as filled');
+  assert.equal(result.confidence, 30, 'missing a required field must abstain, not report the ATS-adapter-tier 70');
 });
 
 // F8's own SSRF regression, per TEST_PLAN. The guard was built ahead of time for

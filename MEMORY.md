@@ -40,7 +40,7 @@ touching what.
 | F5 | Greenhouse adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings on the new job-boards.greenhouse.io domain — selectors correct as-is (no code bug found), CAPTCHA confirmed present on all 5 (1 only post-fill, confirming the dual pre/post check matters), hydration-timing question resolved (no wait needed) |
 | F6 | Ashby adapter — browser automation + selector verification | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against 5 real live postings — 2 real bugs found & fixed (a genuine field-scan hydration-timing race, unlike F5's Greenhouse where none was needed; and a click-through-to-/application form flow); CAPTCHA not observed on any of the 5 (unlike F4/F5's 100%) |
 | F7 | CAPTCHA / bot-challenge live-view | ✅ Done, verified (2 items narrower-scope) | Claude (session) | Verified 2026-08-19 against a real hCaptcha — full pause→live-view→resume cycle confirmed live, critical TASK_DEADLINE_MS pause-aware regression confirmed with real evidence, 1 real bug fixed (WS auth accepted-then-closed instead of never-accepted). Mouse/keyboard round-trip and email-verification not exercised against real occurrences — see TEST_PLAN.md |
-| F8 | Generic engine (non-ATS sources) | ✅ Done, verified | Claude (session) | F8a + F8b built and verified against real postings; `genericAdapter.js` implemented. F8c researched and deliberately closed — 3/16 aggregator postings reachable, and 2 of those 3 land on adapters we already have. `APPLY_BOT_GENERIC_ENABLED` stays false as a *conclusion*, not a gap |
+| F8 | Generic engine (non-ATS sources) | ✅ Done, verified | Claude (session) | F8a + F8b built and verified against real postings; `genericAdapter.js` implemented. F8c researched and deliberately closed. Code-review fix 2026-08-20 — `locateSubmit`'s fallback never fell back (Locator-truthy bug), `fillByIndex` reported fills that genuinely failed (undermined the abstain rule), both confirmed live and fixed; also carried forward F4-F7's worker.js/internal.js mode-check fixes. `APPLY_BOT_GENERIC_ENABLED` stays false as a *conclusion*, not a gap |
 | F9 | Failure measurement & alerting | ✅ Done, verified | Claude (session) | Verified 2026-08-19 against real Neon — all 4 test-plan items pass. Remaining half built (`jobs/applyBotFailureReport.js`); 1 real design bug found & fixed during verification (report skipped entirely when the kill switch was off). Item 2 verified at logic level only — frontend has no test tooling |
 | F10 | Testing & verification harness | 🟡 Partially built | Unassigned | 47 automated tests passing, 3 skipped (Playwright-only) as of 2026-08-19 — DB-dependent sweep/callback tests un-skipped during F2 verification, +5 added by F9; remaining items need a real Playwright install |
 | F11 | Credential & session management UX | 🔴 Not started | Unassigned | API exists (`/api/apply-credentials`), no Settings-page UI |
@@ -53,6 +53,95 @@ Legend: ✅ done and verified · 🟡 built but unverified/needs work · 🔴 no
 ---
 
 ## Decisions Log
+
+### 2026-08-20 — F8 code-review fix: locateSubmit's fallback never fell back, fillByIndex reported fills that genuinely failed, plus two carried-forward mode-check fixes
+Branch: `f8-generic-engine`. Same "fix every bug, verify against the test plan"
+pass as F1-F7 (see those entries below) — this branch's own prior work (see the
+two entries right below) was unusually thorough (a real 20-URL corpus, 611
+misrouted jobs measured and recovered, live selection runs against real Neon),
+which made the two bugs found here more notable, not less: they survived a
+genuinely rigorous verification pass, which says something about how easy this
+specific bug shape is to miss without a targeted adversarial fixture.
+
+**Bug #1 — `genericAdapter.js`'s `locateSubmit()` fallback loop never actually
+fell back.** It was synchronous and checked `if (candidate)` where `candidate =
+page.getByRole(...).first()` — but a Playwright Locator is ALWAYS truthy
+regardless of match count; `.first()` returns a lazy handle, not a resolved
+element, so truthiness tells you nothing about whether anything matched.
+Confirmed directly, the same way every other finding this session was
+confirmed: built a fixture with a button reading "Apply Now" (pattern #4 —
+`/^apply( now| for this job)?$/i`) and NOTHING matching pattern #1
+(`/^submit application$/i`) — `if (candidate)` was still `true` for pattern #1,
+even though `candidate.count()` was `0`. Patterns #2-#4 were unreachable dead
+code. In live mode this would mean `submitButton.click({ timeout: 10000 })`
+targets a zero-match locator and times out — failing the task — on every real
+form except one with a button reading EXACTLY "submit application." The
+existing test for this (`locateSubmit does not match an unrelated "apply"
+link`) never caught it: its own fixture happened to ALSO have a real "Submit
+Application" button, so pattern #1 matched by coincidence and the broken
+fallback path was simply never exercised, even though the test's own docstring
+claims to be testing fallback behavior. **Lesson worth generalizing**: a test
+fixture that satisfies the FIRST branch of an if/else-chain can pass while
+never proving the chain's later branches work at all — worth deliberately
+constructing fixtures that force each branch, not just fixtures that produce
+the right final answer by any path.
+
+Fixed: `locateSubmit` is now `async` and awaits `.count()` per pattern before
+committing to it. `worker.js`'s one call site now `await`s the result —
+confirmed harmless for the other three adapters' synchronous `locateSubmit`
+(a plain Playwright Locator is not thenable, so awaiting one is a no-op).
+Added a genuinely adversarial fixture test, `locateSubmit falls back correctly
+when pattern #1 does not exist on the page`, using an "Apply Now"-only button —
+this is the fixture shape that would have caught the original bug.
+
+**Bug #2 — `fillByIndex` reported a field as filled even when the fill
+genuinely failed.** `.catch(() => {})` swallowed `fill()`/`setInputFiles()`
+errors, then `fieldsFilled[key] = value` was set unconditionally right after,
+regardless of whether the write actually happened. Confirmed with a real
+disabled `<input>` fixture: Playwright's `.fill()` threw exactly as expected
+(a disabled element isn't editable), but the old code still recorded
+`fieldsFilled.email` as filled with the real DOM value left blank the whole
+time. This directly undermines the abstain rule — `genericAdapter.js`'s own
+comment calls it "the entire safety mechanism" for a feature that, by
+definition, operates on DOM structure nobody has verified ahead of time. Same
+underlying error-swallowing PATTERN exists in `leverAdapter.js`,
+`greenhouseAdapter.js`, and `ashbyAdapter.js` too (all four adapters share this
+`.catch(() => {}); fieldsFilled[key] = value;` shape) — not fixed there in this
+session (those branches are already stashed; re-opening three more stashes for
+a fix not yet proven to matter in practice for hand-verified ATS selectors was
+judged lower-value than continuing through the remaining branches), but
+flagging clearly here rather than leaving it a silent gap: **F4/F5/F6 should
+get the identical fix in a follow-up pass** before this feature goes live,
+since the abstain rule is the entire safety net once a task is allowed to
+actually click Submit.
+
+Fixed here: the fill/upload is now wrapped in a real `try`/`catch` that returns
+`false` (not filled) on a genuine failure, only recording `fieldsFilled[key]`
+after an actual success. While touching this function, also applied
+`ashbyAdapter.js`'s established stable id/name field-lookup fix (`F6`'s entry
+below) instead of the positional index — the identical stale-index risk
+applies here, arguably more so, since there's no hand-verified selector set to
+fall back to at all on a page of unknown structure. New test added: `does not
+report a field as filled if the fill genuinely fails`.
+
+**Two already-established fixes carried forward, same as F7's entry documents
+doing for its own branch**: this branch's `worker.js` (inherited from F7's
+committed code, before F7's own session fixed it) still paused for a human on
+every detected challenge regardless of `task.mode` — fixed identically, same
+queue-blocking severity reasoning. `internal.js`'s `status === 'submitted' &&
+task.job` still didn't check `task.mode === 'live'` — fixed identically (F2's
+original finding).
+
+`npm test` re-run after all four fixes: apply-bot 38/38 pass, backend 66 pass /
+1 skip (no local server) / 0 fail.
+
+**Why**: the two new bugs are both instances of a pattern worth naming
+explicitly — "the code path that only runs on failure/fallback is the one most
+likely to be unverified," because the happy path is what naturally gets
+exercised during normal development and manual testing. Both here happened to
+be silently swallowed by permissive JS truthiness/`.catch()` semantics, which
+made them invisible without a fixture specifically designed to force the
+failure path.
 
 ### 2026-08-19 — F8 completed: 611 misrouted jobs recovered, generic adapter implemented, F8c researched and closed
 Branch: `f8-generic-engine`. Follows the same day's scoping-pass entry below, which

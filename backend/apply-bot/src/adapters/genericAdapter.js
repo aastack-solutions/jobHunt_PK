@@ -52,21 +52,44 @@ async function fillApplication(page, profile) {
   const fieldsFilled = {};
   const fields = await scanFields(page);
 
-  // Same mechanism the three ATS adapters use: fieldTaxonomy.scanFields returns
-  // entries in document order, so nth(index) on the identical combined selector
-  // lines back up with the scan. Deliberately reusing that pattern rather than
-  // inventing a second one -- see ashbyAdapter.fillApplication.
+  // Uses a stable id/name attribute selector rather than fieldTaxonomy.scanFields's
+  // positional index -- found and fixed 2026-08-20 (code review), same bug and same
+  // fix as ashbyAdapter.js's locatorForField(): filling one field can mutate the DOM
+  // before a later field is filled (a re-render inserting/removing a sibling
+  // element), which silently shifts what nth(index) resolves to in the LIVE DOM
+  // versus what it pointed at when `fields` was scanned. On a form of genuinely
+  // unknown structure -- this adapter's entire premise -- that risk is at least as
+  // real as it was for Ashby, arguably more so since there's no hand-verified
+  // selector set to fall back to at all.
+  const locatorForField = (field) => {
+    if (field.id) return page.locator(`[id="${field.id}"]`).first();
+    if (field.name) return page.locator(`[name="${field.name}"]`).first();
+    return page.locator('input, textarea, select').nth(field.index);
+  };
+
+  // Records a field as filled ONLY if the fill/upload actually succeeded -- found
+  // and fixed 2026-08-20 (code review): the original swallowed fill()/setInputFiles()
+  // errors via .catch(() => {}) and then recorded fieldsFilled[key] = value
+  // unconditionally regardless, so a genuinely-failed fill (a disabled/readonly
+  // field, a stale/inactionable element) was reported identically to a real success.
+  // That directly undermines the abstain rule -- this adapter's own comment calls it
+  // "the entire safety mechanism" -- since requiredOk below trusts fieldsFilled's
+  // presence, not actual DOM state. Confirmed with a real disabled-input fixture:
+  // .fill() threw as expected, but the old code still recorded the field as filled
+  // with the actual input value left blank.
   const fillByIndex = async (key, value, isFile = false) => {
     if (!value) return false;
     const match = bestMatch(fields, key);
     if (!match) return false;
-    const locator = page.locator('input, textarea, select').nth(match.field.index);
-    if (isFile) {
-      await locator
-        .setInputFiles({ name: profile.resumeFileName || 'resume.pdf', mimeType: 'application/pdf', buffer: value })
-        .catch(() => {});
-    } else {
-      await locator.fill(String(value)).catch(() => {});
+    const locator = locatorForField(match.field);
+    try {
+      if (isFile) {
+        await locator.setInputFiles({ name: profile.resumeFileName || 'resume.pdf', mimeType: 'application/pdf', buffer: value });
+      } else {
+        await locator.fill(String(value));
+      }
+    } catch {
+      return false; // the fill genuinely failed -- do not report it as filled
     }
     fieldsFilled[key] = isFile ? profile.resumeFileName || 'resume.pdf' : value;
     return true;
@@ -125,13 +148,25 @@ const SUBMIT_PATTERNS = [
   /^apply( now| for this job)?$/i,
 ];
 
-function locateSubmit(page) {
-  // Returns the first pattern that actually matches something on the page rather
-  // than blindly returning pattern #1's locator, so a form using "Apply now" is not
-  // reported as having no submit button at all.
+// Async -- found and fixed 2026-08-20 (code review). The original was synchronous
+// and checked `if (candidate)`, but a Playwright Locator object is ALWAYS truthy
+// regardless of how many elements it actually matches -- `.first()` returns a lazy
+// handle, not a resolved element. That made the loop return pattern #1's locator on
+// its very first iteration every time, even when NOTHING on the page matched
+// "submit application" exactly -- confirmed directly with a fixture button reading
+// "Apply Now" (matches pattern #4): candidate.count() was 0, yet `if (candidate)`
+// was still true. Patterns #2-#4 were unreachable dead code. In live mode this
+// meant `submitButton.click()` was called on a locator matching zero elements on
+// every form except one with a button reading EXACTLY "submit application" -- a
+// 10-second timeout and a failed task on every other real "Apply Now"/"Submit"/
+// "Send Application" button. Fixed by actually awaiting `.count()` to check whether
+// a pattern matches before committing to it. worker.js's call site is updated to
+// `await` this (harmless for the other three adapters' synchronous locateSubmit --
+// awaiting a plain Locator, which is not thenable, just returns it unchanged).
+async function locateSubmit(page) {
   for (const pattern of SUBMIT_PATTERNS) {
     const candidate = page.getByRole('button', { name: pattern }).first();
-    if (candidate) return candidate;
+    if ((await candidate.count()) > 0) return candidate;
   }
   return page.getByRole('button', { name: SUBMIT_PATTERNS[0] }).first();
 }

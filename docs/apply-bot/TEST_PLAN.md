@@ -390,6 +390,52 @@ started, so the unchecked items below still stand.
       employer-hosted postings across 7 different employers (none previously probed)
       all served a real application form at the rewritten URL
 
+**2026-08-20 follow-up (code review fix)**: found and fixed two more real bugs in
+`genericAdapter.js`, both confirmed live against real Chromium before and after,
+plus carried forward two already-established fixes from other branches.
+
+1. **`locateSubmit`'s fallback loop never actually fell back.** It was
+   synchronous and checked `if (candidate)` — but a Playwright Locator object is
+   ALWAYS truthy regardless of match count (`.first()` returns a lazy handle, not
+   a resolved element). Confirmed directly: a fixture button reading "Apply Now"
+   (pattern #4) still made `if (candidate)` true for pattern #1
+   (`/^submit application$/i`, 0 real matches). Patterns #2-#4 were unreachable
+   dead code — in live mode, `submitButton.click()` would target a zero-match
+   locator on every real form except one with a button reading EXACTLY "submit
+   application," timing out and failing the task. The one existing test for this
+   (`locateSubmit does not match an unrelated "apply" link`) never caught it
+   because its own fixture happened to have a "Submit Application" button, so
+   pattern #1 matched by coincidence and the broken fallback logic was never
+   exercised. Fixed: `locateSubmit` is now `async` and awaits `.count()` per
+   pattern; `worker.js`'s call site now awaits it (harmless for the other three
+   adapters' synchronous `locateSubmit` — a plain Locator isn't thenable). New
+   test added, `locateSubmit falls back correctly when pattern #1 does not exist
+   on the page`, using the exact "Apply Now"-only fixture that proves it.
+2. **`fillByIndex` reported a field as filled even when the fill genuinely
+   failed.** `.catch(() => {})` swallowed `fill()`/`setInputFiles()` errors, then
+   `fieldsFilled[key] = value` was set unconditionally right after regardless of
+   whether the write actually happened. Confirmed with a real disabled `<input>`:
+   `.fill()` threw as expected (element not editable), but the old code still
+   recorded the email as filled with the actual DOM value left blank. This
+   directly undermines the abstain rule — this file's own comment calls it "the
+   entire safety mechanism" for a feature operating on genuinely unknown DOM
+   structure. Fixed: the try/catch now returns `false` (not filled) on a genuine
+   failure, only recording `fieldsFilled[key]` after a real success. Same fix
+   also applied the ashbyAdapter-established stable id/name field lookup (instead
+   of a positional index) while touching this function, for the identical
+   stale-index reason F6's entry documents — arguably an even bigger risk here
+   given there's no hand-verified selector set to fall back to at all. New test
+   added: `does not report a field as filled if the fill genuinely fails`.
+3. **Carried forward F4/F5/F6/F7's `worker.js` fix**: this branch's `worker.js`
+   (inherited from F7's committed code, before that fix existed) still paused
+   for a human on every detected challenge regardless of `task.mode` — same
+   queue-blocking severity as F7's own finding. Fixed identically.
+4. **Carried forward F2/F7's `internal.js` fix**: `status === 'submitted' &&
+   task.job` still didn't check `task.mode === 'live'`. Fixed identically.
+
+`npm test` re-run after all four: apply-bot 38/38 pass (3 new + 1 rewritten from
+the existing suite), backend 66 pass / 1 skip (no local backend server) / 0 fail.
+
 ## F9 — Failure Measurement & Alerting
 
 All four verified 2026-08-19 against the real Neon database with the backend

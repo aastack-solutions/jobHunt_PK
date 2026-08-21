@@ -21,6 +21,20 @@ test('resolveAdapter: returns null for a malformed URL rather than throwing', ()
   assert.equal(resolveAdapter('not-a-url'), null);
 });
 
+test('resolveAdapter: hostname-suffix spoofing falls through to generic, not the real adapter (security fix 2026-08-21)', () => {
+  // "boards.greenhouse.io.attacker.com" CONTAINS "greenhouse.io" as a substring
+  // but is not that domain or a subdomain of it. Each adapter's matches() used
+  // to be a naive .includes() check, so a URL like this would wrongly route to
+  // the real greenhouseAdapter — which, for a platform with login() enabled,
+  // decrypts and types the user's real stored credential into whatever page is
+  // actually at this attacker-controlled host.
+  assert.equal(resolveAdapter('https://boards.greenhouse.io.attacker.com/apply').platform, 'generic');
+  assert.equal(resolveAdapter('https://jobs.lever.co.attacker.com/apply').platform, 'generic');
+  assert.equal(resolveAdapter('https://jobs.ashbyhq.com.attacker.com/apply').platform, 'generic');
+  // A real subdomain of the real domain must still resolve to the real adapter.
+  assert.equal(resolveAdapter('https://job-boards.greenhouse.io/realcompany/jobs/1').platform, 'greenhouse');
+});
+
 test('every registered adapter is usesBrowser (Contract A correction, 2026-08-17): none are API-based', () => {
   const { ADAPTERS } = require('../src/adapters');
   for (const adapter of ADAPTERS) {
@@ -157,11 +171,11 @@ test('genericAdapter: locateSubmit does not match an unrelated "apply" link', { 
     <button>Apply to other jobs</button>
     <button>Submit Application</button>
   </body></html>`;
-  // locateSubmit() is async (see MEMORY.md's F8/F10/F11 entries): a Playwright
-  // Locator is always truthy regardless of match count, so this fixture happened
-  // to pass under the old synchronous code purely by coincidence -- pattern #1
-  // ("submit application") exists on THIS page, so the fallback logic it claims to
-  // test was never actually exercised. See the next test for a fixture that does.
+  // locateSubmit() is async (see MEMORY.md's F8/F10 entries): a Playwright Locator
+  // is always truthy regardless of match count, so this fixture happened to pass
+  // under the old synchronous code purely by coincidence -- pattern #1 ("submit
+  // application") exists on THIS page, so the fallback logic it claims to test was
+  // never actually exercised. See the next test for a fixture that actually does.
   const chosen = await withPage(DECOY, async (page) => {
     const locator = await genericAdapter.locateSubmit(page);
     return locator.innerText();
@@ -197,6 +211,24 @@ test('genericAdapter: does not report a field as filled if the fill genuinely fa
   const result = await withPage(DISABLED_EMAIL_FORM, (page) => genericAdapter.fillApplication(page, PROFILE));
   assert.equal(result.fieldsFilled.email, undefined, 'a genuinely failed fill must not be reported as filled');
   assert.equal(result.confidence, 30, 'missing a required field must abstain, not report the ATS-adapter-tier 70');
+});
+
+test('genericAdapter: a crafted id attribute cannot redirect the fill to a different element (security fix 2026-08-21)', { skip: pwSkip }, async () => {
+  // "decoy-field" is the field bestMatch() actually scored as the email field.
+  // Its id is crafted so an unescaped `[id="${field.id}"]` template breaks out of
+  // the quoted attribute value and appends a second selector clause matching
+  // #other-field too — proving the old unescaped code could fill an element the
+  // confidence scorer never scored at all.
+  const INJECTION_FORM = `<!doctype html><html><body><form>
+    <label for='decoy-field"],[id="other-field'>Email address</label>
+    <input id='decoy-field"],[id="other-field' type="text" />
+    <input id="other-field" type="text" />
+  </form></body></html>`;
+  const otherFieldValue = await withPage(INJECTION_FORM, async (page) => {
+    await genericAdapter.fillApplication(page, PROFILE);
+    return page.inputValue('#other-field');
+  });
+  assert.equal(otherFieldValue, '', 'the unrelated #other-field must never receive a value it was not scored for');
 });
 
 // F8's own SSRF regression, per TEST_PLAN. The guard was built ahead of time for

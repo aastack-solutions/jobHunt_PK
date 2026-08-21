@@ -23,9 +23,15 @@
 const { bestMatch, scanFields } = require('../engine/fieldTaxonomy');
 const { detectCaptcha } = require('../engine/captchaDetector');
 
+// Exact-or-subdomain match, not substring — found & fixed 2026-08-21 (security
+// review). The original `.includes('ashbyhq.com')` also matches a hostname like
+// "jobs.ashbyhq.com.attacker.com" (the real domain appears as a substring, not
+// as the actual host). See the identical fix in
+// backend/src/services/applyBotPlatform.js for the full writeup.
 function matches(applyUrl) {
   try {
-    return new URL(applyUrl).hostname.toLowerCase().includes('ashbyhq.com');
+    const hostname = new URL(applyUrl).hostname.toLowerCase();
+    return hostname === 'ashbyhq.com' || hostname.endsWith('.ashbyhq.com');
   } catch {
     return false;
   }

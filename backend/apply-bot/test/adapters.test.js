@@ -21,6 +21,20 @@ test('resolveAdapter: returns null for a malformed URL rather than throwing', ()
   assert.equal(resolveAdapter('not-a-url'), null);
 });
 
+test('resolveAdapter: hostname-suffix spoofing falls through to generic, not the real adapter (security fix 2026-08-21)', () => {
+  // "boards.greenhouse.io.attacker.com" CONTAINS "greenhouse.io" as a substring
+  // but is not that domain or a subdomain of it. Each adapter's matches() used
+  // to be a naive .includes() check, so a URL like this would wrongly route to
+  // the real greenhouseAdapter — which, for a platform with login() enabled,
+  // decrypts and types the user's real stored credential into whatever page is
+  // actually at this attacker-controlled host.
+  assert.equal(resolveAdapter('https://boards.greenhouse.io.attacker.com/apply').platform, 'generic');
+  assert.equal(resolveAdapter('https://jobs.lever.co.attacker.com/apply').platform, 'generic');
+  assert.equal(resolveAdapter('https://jobs.ashbyhq.com.attacker.com/apply').platform, 'generic');
+  // A real subdomain of the real domain must still resolve to the real adapter.
+  assert.equal(resolveAdapter('https://job-boards.greenhouse.io/realcompany/jobs/1').platform, 'greenhouse');
+});
+
 test('every registered adapter is usesBrowser (Contract A correction, 2026-08-17): none are API-based', () => {
   const { ADAPTERS } = require('../src/adapters');
   for (const adapter of ADAPTERS) {
